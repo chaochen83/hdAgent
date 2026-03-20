@@ -1,3 +1,7 @@
+from .fastapi_app import app
+
+__all__ = ["app"]
+
 import asyncio
 import os
 from contextlib import asynccontextmanager
