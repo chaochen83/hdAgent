@@ -29,15 +29,19 @@ async def intent_node(state: GraphState) -> GraphState:
         product_model_list=list_product_models(),
     )
 
+    # print (f"intent_node: info={info}")
+
     last_user = ""
     for m in reversed(state.messages):
         if m.role == "user":
             last_user = m.content
             break
 
-    matched = info.get("product_model") or _resolve_product_model_from_text(last_user)
+    explicit_model_in_text = _resolve_product_model_from_text(last_user)
+    matched = info.get("product_model") or explicit_model_in_text
     intent = info.get("intent", "general_chat")
-    if matched:
+    # 仅当用户这轮文本里明确出现型号/别名，或模型明确判定 set_product_model 时，才进入设置型号分支
+    if intent == "set_product_model" or explicit_model_in_text:
         intent = "set_product_model"
 
     return GraphState(

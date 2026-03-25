@@ -95,8 +95,9 @@ async def detect_intent_with_llm(
         "Decide intent from the conversation context.\n"
         "Allowed intent values: set_product_model, generate_code, general_chat.\n"
         "If user is selecting a product model, map only to one exact item from product_model_list.\n"
+        "If user is asking for code, set intent to generate_code.\n"
         "Never output any model not in product_model_list.\n"
-        "Output strict JSON only."
+        "Output strict JSON only. No need to use ```json or any Markdown."
     )
     user_prompt = (
         f"current_product_model={current_product_model}\n"
@@ -112,12 +113,19 @@ async def detect_intent_with_llm(
         {"role": "user", "content": user_prompt},
     ]
     result = await _chat_completion_non_stream(provider=provider, model=model, messages=req_messages)
+
+    print (f"intent_node: result={result}")
     text = (result or "").strip()
+
+
     try:
         parsed = json.loads(text)
         intent = parsed.get("intent", "general_chat")
+
         product_model = parsed.get("product_model")
         reply = parsed.get("reply", "")
+
+
         if product_model and product_model not in product_model_list:
             product_model = None
         if intent not in {"set_product_model", "generate_code", "general_chat"}:
