@@ -10,18 +10,23 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
-    product_model: Optional[str] = None
+    current_product_model: Optional[str] = None
     provider: Literal["qwen", "openai", "claude", "deepseek"] = "deepseek"
     model: Optional[str] = None
 
 
 class ChatState(BaseModel):
     messages: list[ChatMessage]
-    product_model: Optional[str] = None
+    current_product_model: Optional[str] = None
     provider: str
     model: Optional[str] = None
 
 
 class GraphState(BaseModel):
     messages: list[ChatMessage]
+    current_product_model: Optional[str] = None
+    provider: str = "deepseek"
+    model: Optional[str] = None
+    intent: Optional[str] = None
+    matched_product_model: Optional[str] = None
 

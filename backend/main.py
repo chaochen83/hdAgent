@@ -2,6 +2,10 @@ from .fastapi_app import app
 
 __all__ = ["app"]
 
+from .fastapi_app import app
+
+__all__ = ["app"]
+
 import asyncio
 import os
 from contextlib import asynccontextmanager
@@ -30,7 +34,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     product_model: Optional[str] = None
-    provider: Literal["qwen", "openai", "claude"] = "qwen"
+    provider: Literal["qwen", "openai", "claude", "deepseek"] = "deepseek"
     model: Optional[str] = None
 
 
@@ -54,13 +58,13 @@ PRODUCT_PROMPTS: Dict[str, str] = {
 }
 
 
-def build_system_prompt(product_model: Optional[str]) -> str:
+def build_system_prompt(product_model: Optional[str], include_device_context: bool = True) -> str:
     base = (
         "You are Makerfabs' hardware AI assistant. "
         "The user is asking about Makerfabs boards and wants **ready-to-flash code**. "
         "Always answer in Chinese, and then provide full code.\n"
     )
-    if product_model and product_model in PRODUCT_PROMPTS:
+    if include_device_context and product_model and product_model in PRODUCT_PROMPTS:
         return base + "\nDevice-specific context:\n" + PRODUCT_PROMPTS[product_model]
     return base
 
@@ -114,6 +118,57 @@ async def call_qwen(messages: list[ChatMessage], model: Optional[str]) -> AsyncG
                             yield content
                 except Exception:
                     # Best-effort: ignore malformed lines
+                    continue
+
+
+async def call_deepseek(messages: list[ChatMessage], model: Optional[str]) -> AsyncGenerator[str, None]:
+    """
+    Stream responses from DeepSeek via its OpenAI-compatible endpoint.
+    Env vars:
+      DEEPSEEK_API_KEY
+      DEEPSEEK_BASE_URL (optional, default: https://api.deepseek.com)
+      DEEPSEEK_MODEL (optional, default: deepseek-chat)
+    """
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    if not api_key:
+        yield "后端未配置 DEEPSEEK_API_KEY，请先在环境变量中设置。"
+        return
+
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model_name,
+        "stream": True,
+        "messages": [m.model_dump() for m in messages],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[len("data: ") :]
+                else:
+                    data = line
+                if data == "[DONE]":
+                    break
+                try:
+                    import json
+
+                    obj = json.loads(data)
+                    for choice in obj.get("choices", []):
+                        delta = choice.get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                except Exception:
                     continue
 
 
@@ -186,8 +241,13 @@ async def call_provider(state: "ChatState") -> AsyncGenerator[str, None]:
         stream = call_openai(state.messages, state.model)
     elif state.provider == "claude":
         stream = call_claude(state.messages, state.model)
-    else:
+    elif state.provider == "qwen":
         stream = call_qwen(state.messages, state.model)
+    elif state.provider == "deepseek":
+        # 暂时复用 Qwen 调用通道（如需真实 DeepSeek 调用，在此实现）
+        stream = call_deepseek(state.messages, state.model)
+    else:
+        stream = call_deepseek(state.messages, state.model)
 
     buffer = ""
     in_code_block = False
@@ -280,7 +340,7 @@ async def chat_stream(req: ChatRequest):
     SSE 流式输出接口，前端可以随时关闭连接来“暂停”输出。
     """
 
-    system_prompt = build_system_prompt(req.product_model)
+    system_prompt = build_system_prompt(req.product_model, include_device_context=True)
     messages: list[ChatMessage] = [
         ChatMessage(role="system", content=system_prompt),
         *req.messages,

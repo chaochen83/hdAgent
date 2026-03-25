@@ -447,9 +447,7 @@
           <div class="select-group">
             <label class="label" for="productSelect">目标产品型号</label>
             <select id="productSelect">
-              <option value="MaTouch_ESP32S3" selected>MaTouch_ESP32S3</option>
-              <option value="ESP32-S3-WROOM-1">ESP32-S3-WROOM-1</option>
-              <option value="">其他（通用回答）</option>
+              <option value="" selected>请先确认产品型号</option>
             </select>
           </div>
           <div class="select-group">
@@ -504,6 +502,12 @@
       const productSelect = document.getElementById("productSelect");
       const providerSelect = document.getElementById("providerSelect");
 
+      function updateSendEnabled() {
+        const hasText = userInputEl.value.trim().length > 0;
+        // 流式输出时禁用发送；输入为空也禁用发送
+        sendBtn.disabled = !!currentSource || !hasText;
+      }
+
       /** 会话上下文，发送给后端 */
       const conversation = [];
 
@@ -511,6 +515,23 @@
       let currentSource = null;
       let currentAssistantBuffer = "";
       let currentAssistantNode = null;
+      // 全局会话参数：当前产品型号（优先用新 key，兼容旧 key）
+      let current_product_model = localStorage.getItem("current_product_model") || null;
+
+      // 如果缓存里已有设备，也同步到下拉框（不影响后端逻辑）
+      if (current_product_model) {
+        productSelect.value = current_product_model;
+      }
+
+      productSelect.addEventListener("change", () => {
+        const selected = (productSelect.value || "").trim();
+        current_product_model = selected || null;
+        if (current_product_model) {
+          localStorage.setItem("current_product_model", current_product_model);
+        } else {
+          localStorage.removeItem("current_product_model");
+        }
+      });
 
       function appendMessage(role, content) {
         const row = document.createElement("div");
@@ -551,9 +572,6 @@
         el.innerHTML = "";
 
         const blocks = parseBlocks(text);
-        const codeBlocks = blocks.filter((b) => b.type === "code");
-        const allCode = codeBlocks.map((b) => b.text).join("\n\n").trim();
-        const firstCodeIdx = blocks.findIndex((b) => b.type === "code");
 
         blocks.forEach((block, blockIdx) => {
           if (block.type === "code") {
@@ -564,22 +582,21 @@
             header.className = "code-block-header";
             header.textContent = block.lang ? `代码 (${block.lang})` : "代码";
 
-            if (blockIdx === firstCodeIdx && allCode) {
-              const btn = document.createElement("button");
-              btn.className = "code-copy-btn";
-              btn.textContent = "复制全部代码";
-              btn.addEventListener("click", async () => {
-                try {
-                  await navigator.clipboard.writeText(allCode);
-                  btn.textContent = "已复制";
-                  setTimeout(() => (btn.textContent = "复制全部代码"), 1500);
-                } catch {
-                  btn.textContent = "复制失败";
-                  setTimeout(() => (btn.textContent = "复制全部代码"), 1500);
-                }
-              });
-              header.appendChild(btn);
-            }
+            // 每段代码块都有独立按钮
+            const btn = document.createElement("button");
+            btn.className = "code-copy-btn";
+            btn.textContent = "复制全部代码";
+            btn.addEventListener("click", async () => {
+              try {
+                await navigator.clipboard.writeText(block.text);
+                btn.textContent = "已复制";
+                setTimeout(() => (btn.textContent = "复制全部代码"), 1500);
+              } catch {
+                btn.textContent = "复制失败";
+                setTimeout(() => (btn.textContent = "复制全部代码"), 1500);
+              }
+            });
+            header.appendChild(btn);
 
             const pre = document.createElement("pre");
             const code = document.createElement("code");
@@ -715,23 +732,18 @@
           sendBtn.disabled = true;
           stopBtn.style.display = "inline-flex";
         } else {
-          sendBtn.disabled = false;
           stopBtn.style.display = "none";
+          updateSendEnabled();
         }
       }
 
       function initConversation() {
         const initialUser =
           "你好，欢迎进入 Makerfabs AI， 你需要问关于那个产品的问题呢？";
-        const initialAssistant =
-          "OK，有什么我可以帮助你？例如：\n- MaTouch_ESP32S3：在屏幕上画一个笑脸\n- ESP32-S3-WROOM-1：读取 MPU-6050 数据并通过串口输出\n你可以直接告诉我你用的板子和想要实现的效果。";
-
         appendMessage("assistant", initialUser);
-        appendMessage("assistant", initialAssistant);
 
         conversation.push(
           { role: "assistant", content: initialUser },
-          { role: "assistant", content: initialAssistant },
         );
       }
 
@@ -754,7 +766,7 @@
 
         const payload = {
           messages: conversation,
-          product_model: productSelect.value || null,
+          current_product_model: (productSelect.value || "").trim() || current_product_model || null,
           provider: providerSelect.value,
         };
 
@@ -773,6 +785,18 @@
 
         currentSource = es;
 
+        // 后端推送“已确定产品型号”，前端缓存用于下次对话
+        es.addEventListener("product_model", (ev) => {
+          const d = (ev.data || "").trim();
+          if (!d) return;
+          current_product_model = d;
+          localStorage.setItem("current_product_model", d);
+          // 尽量同步到下拉框（如果选项存在）
+          if (Array.from(productSelect.options).some((o) => o.value === d)) {
+            productSelect.value = d;
+          }
+        });
+
         es.addEventListener("token", (ev) => {
           const chunk = ev.data;
           console.log("[stream token]", chunk);
@@ -788,6 +812,12 @@
           cleanupStream();
         });
 
+        es.addEventListener("error", (ev) => {
+          console.error("[server stream error]", ev.data);
+          setError("服务器错误（" + ev.data + "）");
+          cleanupStream();
+        });
+
         es.onerror = (e) => {
           console.error("[stream error]", e);
           setError("流式连接出错或已中断。");
@@ -797,16 +827,17 @@
 
       function cleanupStream() {
         hideTyping();
-        setStreaming(false);
         if (currentSource) {
           currentSource.close();
           currentSource = null;
         }
+        setStreaming(false);
         if (currentAssistantBuffer) {
           conversation.push({ role: "assistant", content: currentAssistantBuffer });
         }
         currentAssistantBuffer = "";
         currentAssistantNode = null;
+        updateSendEnabled();
       }
 
       // 簇流式 POST + SSE Polyfill 封装
@@ -903,6 +934,42 @@
       });
 
       initConversation();
+      loadProductModelList();
+      updateSendEnabled();
+      userInputEl.addEventListener("input", updateSendEnabled);
+
+      async function loadProductModelList() {
+        try {
+          const API_BASE = window.location.origin.replace(/\/$/, "");
+          const res = await fetch(API_BASE + "/product-model-list");
+          if (!res.ok) return;
+          const data = await res.json();
+          const list = Array.isArray(data.product_model_list) ? data.product_model_list : [];
+          const defaultOption = productSelect.querySelector("option[value='']");
+          productSelect.innerHTML = "";
+          if (defaultOption) {
+            productSelect.appendChild(defaultOption);
+          } else {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "请先确认产品型号";
+            productSelect.appendChild(opt);
+          }
+          list.forEach((model) => {
+            const opt = document.createElement("option");
+            opt.value = model;
+            opt.textContent = model;
+            productSelect.appendChild(opt);
+          });
+          if (current_product_model && list.includes(current_product_model)) {
+            productSelect.value = current_product_model;
+          } else {
+            productSelect.value = "";
+          }
+        } catch {
+          // keep static fallback option only
+        }
+      }
     </script>
   </body>
   </html>

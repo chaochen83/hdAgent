@@ -2,14 +2,19 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .llm_providers import build_system_prompt, call_provider
-from .langgraph_agent import chat_graph  # currently not used by routing
-from .schemas import ChatMessage, ChatRequest, ChatState
+from .langgraph_agent import chat_graph
+from .product_knowledge import PRODUCT_MODEL_LIST, get_product_hint
+from .schemas import ChatMessage, ChatRequest, ChatState, GraphState
+
+# 在使用 fastapi_app 作为入口时也加载 .env
+load_dotenv()
 
 
 @asynccontextmanager
@@ -49,26 +54,67 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
     """
     SSE 流式输出接口，前端可以随时关闭连接来“暂停”输出。
     """
-    system_prompt = build_system_prompt(req.product_model)
-    messages = [ChatMessage(role="system", content=system_prompt), *req.messages]
-
-    state = ChatState(
-        messages=messages,
-        product_model=req.product_model,
-        provider=req.provider,
-        model=req.model,
-    )
-
     async def event_generator():
+        graph_state = GraphState(
+            messages=req.messages,
+            current_product_model=req.current_product_model,
+            provider=req.provider,
+            model=req.model,
+        )
+        routed = await chat_graph.ainvoke(graph_state)
+        if isinstance(routed, GraphState):
+            current_product_model = routed.current_product_model
+            intent = routed.intent
+            matched_product_model = routed.matched_product_model
+        else:
+            current_product_model = routed.get("current_product_model")
+            intent = routed.get("intent")
+            matched_product_model = routed.get("matched_product_model")
+
+        # intent node 判断到用户正在设置产品型号：仅在 product_model_list 中确认，不额外返回列表
+        if intent == "set_product_model" and matched_product_model in PRODUCT_MODEL_LIST:
+            current_product_model = matched_product_model
+            yield f"event: product_model\ndata: {current_product_model}\n\n"
+            yield f"event: token\ndata: 明白了，您要问的是{current_product_model}。{get_product_hint(current_product_model)}\n\n"
+            yield "event: end\ndata: [DONE]\n\n"
+            return
+
+        # 没有已设置型号，且当前又不是设置型号，则仅追问一次型号
+        if not current_product_model:
+            yield "event: token\ndata: 你好，欢迎进入 Makerfabs AI， 你需要问关于那个产品的问题呢？\n\n"
+            yield "event: end\ndata: [DONE]\n\n"
+            return
+
+        wants_device_context = intent == "generate_code"
+        system_prompt = build_system_prompt(current_product_model, include_device_context=wants_device_context)
+        messages = [ChatMessage(role="system", content=system_prompt), *req.messages]
+        state = ChatState(
+            messages=messages,
+            current_product_model=current_product_model,
+            provider=req.provider,
+            model=req.model,
+        )
+
         try:
             async for token in call_provider(state):
                 yield f"event: token\ndata: {token}\n\n"
                 await asyncio.sleep(0)  # allow cancellation
         except asyncio.CancelledError:
             return
+        except Exception as e:
+            # 将异常通过 SSE 返回给前端，以便展示“服务器错误（...）”
+            detail = str(e).replace("\n", "\\n").replace("\r", "\\r")
+            yield f"event: error\ndata: {detail}\n\n"
+            yield "event: end\ndata: [DONE]\n\n"
+            return
         yield "event: end\ndata: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/product-model-list")
+async def product_model_list() -> dict:
+    return {"product_model_list": PRODUCT_MODEL_LIST}
 
 
 @app.get("/health")
