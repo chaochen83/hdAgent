@@ -18,33 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 # from sse_starlette.sse import EventSourceResponse
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 
 load_dotenv()
-
-
-def _default_provider_from_env() -> Literal["qwen", "openai", "claude", "deepseek"]:
-    """从 .env 读取 DEFAULT_PROVIDER / default_provider，非法值回落 deepseek。"""
-    raw = (os.getenv("DEFAULT_PROVIDER") or os.getenv("default_provider") or "deepseek").strip().lower()
-    if raw in ("qwen", "openai", "claude", "deepseek"):
-        return raw  # type: ignore[return-value]
-    return "deepseek"
-
-
-def _default_model_for_provider(provider: str) -> Optional[str]:
-    """按 provider 使用对应环境变量中的默认 model（与前端选择的提供方一致）。"""
-    p = (provider or "").strip().lower()
-    env_map = {
-        "openai": os.getenv("OPENAI_MODEL"),
-        "qwen": os.getenv("QWEN_MODEL"),
-        "claude": os.getenv("CLAUDE_MODEL"),
-        "deepseek": os.getenv("DEEPSEEK_MODEL"),
-    }
-    m = env_map.get(p)
-    return m.strip() if isinstance(m, str) and m.strip() else None
 
 
 class ChatMessage(BaseModel):
@@ -55,33 +34,15 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     product_model: Optional[str] = None
-    provider: Literal["qwen", "openai", "claude", "deepseek"] = Field(
-        default_factory=_default_provider_from_env
-    )
+    provider: Literal["qwen", "openai", "claude", "deepseek"] = "deepseek"
     model: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _apply_default_model_from_env(self) -> "ChatRequest":
-        if self.model is None or (isinstance(self.model, str) and not self.model.strip()):
-            m = _default_model_for_provider(self.provider)
-            if m:
-                object.__setattr__(self, "model", m)
-        return self
 
 
 class ChatState(BaseModel):
     messages: list[ChatMessage]
     product_model: Optional[str] = None
-    provider: str = Field(default_factory=_default_provider_from_env)
+    provider: str
     model: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _apply_default_model_from_env(self) -> "ChatState":
-        if self.model is None or (isinstance(self.model, str) and not self.model.strip()):
-            m = _default_model_for_provider(self.provider)
-            if m:
-                object.__setattr__(self, "model", m)
-        return self
 
 
 PRODUCT_PROMPTS: Dict[str, str] = {
