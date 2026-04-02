@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, Literal, Optional
 
 import httpx
@@ -8,29 +9,64 @@ from .product_knowledge import get_product_knowledge
 from .schemas import ChatMessage, ChatState
 
 
-def _debug_print_llm_request(
-    *,
-    provider: str,
-    model: str,
-    api_kind: str,
-    messages: list[dict],
-) -> None:
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
+
+
+def _resolve_model_name(provider: str, model: Optional[str]) -> str:
+    if model:
+        return model
+    if provider == "openai":
+        return os.getenv("OPENAI_MODEL", "gpt-5.4-nano")
+    if provider == "claude":
+        return os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
+    if provider == "qwen":
+        return os.getenv("QWEN_MODEL", "qwen-plus")
+    return os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+
+def _format_prompt(messages: list[dict]) -> str:
+    blocks: list[str] = []
+    for idx, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role", "unknown")
+        content = message.get("content", "")
+        blocks.append(f"### Message {idx}\n- role: {role}\n\n```text\n{content}\n```")
+    return "\n\n".join(blocks) if blocks else "(empty)"
+
+
+def _append_llm_log(*, provider: str, model: str, prompt: str, response: str) -> None:
     try:
-        system_prompt = "\n\n".join(
-            m.get("content", "") for m in messages if isinstance(m, dict) and m.get("role") == "system"
-        ).strip()
-        print("\n===== LLM REQUEST BEGIN =====")
-        print(f"provider={provider} model={model} api_kind={api_kind}")
-        print("----- SYSTEM PROMPT BEGIN -----")
-        print(system_prompt if system_prompt else "(empty)")
-        print("----- SYSTEM PROMPT END -------")
-        print("----- MESSAGES BEGIN ----------")
-        for i, m in enumerate(messages):
-            if not isinstance(m, dict):
-                continue
-            print(f"[{i}] role={m.get('role')}\n{m.get('content', '')}\n")
-        print("----- MESSAGES END ------------")
-        print("===== LLM REQUEST END =====\n")
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        now = datetime.now()
+        log_path = os.path.join(LOGS_DIR, f"{now.strftime('%Y-%m-%d')}.md")
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        entry = (
+            f"## {timestamp}\n"
+            f"- llm: {provider}\n"
+            f"- model: {model}\n\n"
+            f"### Prompt\n\n```text\n{prompt}\n```\n\n"
+            f"### Response\n\n```text\n{response or '(empty)'}\n```\n\n"
+        )
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception:
+        pass
+
+
+def _log_llm_interaction(*, provider: str, model: str, messages: list[dict], response: str) -> None:
+    try:
+        prompt = _format_prompt(messages)
+        print("\n===== LLM LOG BEGIN =====")
+        print(f"llm={provider}")
+        print(f"model={model}")
+        print("prompt:")
+        print(prompt)
+        print("response:")
+        print(response or "(empty)")
+        print("===== LLM LOG END =====\n")
+        _append_llm_log(provider=provider, model=model, prompt=prompt, response=response)
     except Exception:
         pass
 
@@ -113,8 +149,6 @@ async def detect_intent_with_llm(
         {"role": "user", "content": user_prompt},
     ]
     result = await _chat_completion_non_stream(provider=provider, model=model, messages=req_messages)
-
-    print (f"intent_node: result={result}")
     text = (result or "").strip()
 
 
@@ -140,6 +174,7 @@ async def _chat_completion_non_stream(*, provider: str, model: Optional[str], me
         return await _claude_non_stream(model=model, messages=messages)
     if provider == "openai":
         return await _openai_compatible_non_stream(
+            provider_name="openai",
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             api_key=os.getenv("OPENAI_API_KEY", ""),
             model_name=model or os.getenv("OPENAI_MODEL", "gpt-5.4-nano"),
@@ -147,12 +182,14 @@ async def _chat_completion_non_stream(*, provider: str, model: Optional[str], me
         )
     if provider == "qwen":
         return await _openai_compatible_non_stream(
+            provider_name="qwen",
             base_url=os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
             api_key=os.getenv("QWEN_API_KEY", ""),
             model_name=model or os.getenv("QWEN_MODEL", "qwen-plus"),
             messages=messages,
         )
     return await _openai_compatible_non_stream(
+        provider_name="deepseek",
         base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
         api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         model_name=model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
@@ -162,6 +199,7 @@ async def _chat_completion_non_stream(*, provider: str, model: Optional[str], me
 
 async def _openai_compatible_non_stream(
     *,
+    provider_name: str,
     base_url: str,
     api_key: str,
     model_name: str,
@@ -169,12 +207,6 @@ async def _openai_compatible_non_stream(
 ) -> str:
     if not api_key:
         return ""
-    _debug_print_llm_request(
-        provider=base_url,
-        model=model_name,
-        api_kind="non-stream",
-        messages=messages,
-    )
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"model": model_name, "messages": messages, "stream": False, "temperature": 0}
@@ -183,7 +215,9 @@ async def _openai_compatible_non_stream(
         if resp.status_code >= 300:
             return ""
         obj = resp.json()
-        return (((obj.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        text = (((obj.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        _log_llm_interaction(provider=provider_name, model=model_name, messages=messages, response=text)
+        return text
 
 
 async def _claude_non_stream(*, model: Optional[str], messages: list[dict]) -> str:
@@ -191,12 +225,6 @@ async def _claude_non_stream(*, model: Optional[str], messages: list[dict]) -> s
     if not api_key:
         return ""
     model_name = model or os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
-    _debug_print_llm_request(
-        provider="claude",
-        model=model_name,
-        api_kind="non-stream",
-        messages=messages,
-    )
     system_text = ""
     content_messages: list[dict] = []
     for m in messages:
@@ -224,7 +252,9 @@ async def _claude_non_stream(*, model: Optional[str], messages: list[dict]) -> s
         obj = resp.json()
         parts = obj.get("content") or []
         text_parts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text"]
-        return "".join(text_parts).strip()
+        text = "".join(text_parts).strip()
+        _log_llm_interaction(provider="claude", model=model_name, messages=messages, response=text)
+        return text
 
 
 async def _stream_openai_compatible(
@@ -237,12 +267,6 @@ async def _stream_openai_compatible(
     headers_extra: Optional[dict] = None,
     timeout: float = 60.0,
 ) -> AsyncGenerator[str, None]:
-    _debug_print_llm_request(
-        provider=provider_name,
-        model=model_name,
-        api_kind="stream",
-        messages=[m.model_dump() for m in messages],
-    )
     payload = {
         "model": model_name,
         "stream": True,
@@ -338,12 +362,6 @@ async def call_claude(messages: list[ChatMessage], model: Optional[str]) -> Asyn
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     model_name = model or os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
-    _debug_print_llm_request(
-        provider="claude",
-        model=model_name,
-        api_kind="stream",
-        messages=[m.model_dump() for m in messages],
-    )
     if not api_key:
         yield "后端未配置 ANTHROPIC_API_KEY，请先在环境变量中设置。"
         return
@@ -415,12 +433,16 @@ async def call_provider(state: ChatState) -> AsyncGenerator[str, None]:
         stream = call_qwen(state.messages, state.model)
 
     buffer = ""
+    full_response = ""
     in_code_block = False
+    model_name = _resolve_model_name(state.provider, state.model)
+    request_messages = [m.model_dump() for m in state.messages]
 
     async for chunk in stream:
         if not chunk:
             continue
 
+        full_response += chunk
         buffer += chunk
 
         # 检测 ``` 代码块状态
@@ -446,3 +468,9 @@ async def call_provider(state: ChatState) -> AsyncGenerator[str, None]:
     if buffer:
         yield buffer
 
+    _log_llm_interaction(
+        provider=state.provider,
+        model=model_name,
+        messages=request_messages,
+        response=full_response,
+    )

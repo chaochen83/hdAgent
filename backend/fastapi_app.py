@@ -17,6 +17,13 @@ from .schemas import ChatMessage, ChatRequest, ChatState, GraphState
 load_dotenv()
 
 
+def sse_event(event: str, data: str) -> str:
+    normalized = (data or "").replace("\r\n", "\n").replace("\r", "\n")
+    data_lines = normalized.split("\n")
+    payload = "\n".join(f"data: {line}" for line in data_lines)
+    return f"event: {event}\n{payload}\n\n"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 预留：后续可在这里做模型初始化、工具准备等
@@ -74,15 +81,15 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
         # intent node 判断到用户正在设置产品型号：仅在 product_model_list 中确认，不额外返回列表
         if intent == "set_product_model" and matched_product_model in PRODUCT_MODEL_LIST:
             current_product_model = matched_product_model
-            yield f"event: product_model\ndata: {current_product_model}\n\n"
-            yield f"event: token\ndata: 明白了，您要问的是{current_product_model}。{get_product_hint(current_product_model)}\n\n"
-            yield "event: end\ndata: [DONE]\n\n"
+            yield sse_event("product_model", current_product_model)
+            yield sse_event("token", f"明白了，您要问的是{current_product_model}。{get_product_hint(current_product_model)}")
+            yield sse_event("end", "[DONE]")
             return
 
         # 没有已设置型号，且当前又不是设置型号，则仅追问一次型号
         if not current_product_model:
-            yield "event: token\ndata: 你好，欢迎进入 Makerfabs AI， 你需要问关于那个产品的问题呢？\n\n"
-            yield "event: end\ndata: [DONE]\n\n"
+            yield sse_event("token", "你好，欢迎进入 Makerfabs AI， 你需要问关于那个产品的问题呢？")
+            yield sse_event("end", "[DONE]")
             return
 
         wants_device_context = intent == "generate_code"
@@ -97,17 +104,17 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
         try:
             async for token in call_provider(state):
-                yield f"event: token\ndata: {token}\n\n"
+                yield sse_event("token", token)
                 await asyncio.sleep(0)  # allow cancellation
         except asyncio.CancelledError:
             return
         except Exception as e:
             # 将异常通过 SSE 返回给前端，以便展示“服务器错误（...）”
             detail = str(e).replace("\n", "\\n").replace("\r", "\\r")
-            yield f"event: error\ndata: {detail}\n\n"
-            yield "event: end\ndata: [DONE]\n\n"
+            yield sse_event("error", detail)
+            yield sse_event("end", "[DONE]")
             return
-        yield "event: end\ndata: [DONE]\n\n"
+        yield sse_event("end", "[DONE]")
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -120,4 +127,3 @@ async def product_model_list() -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
-

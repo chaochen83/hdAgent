@@ -263,8 +263,6 @@
 
       .input-row {
         display: flex;
-        flex-direction: column;
-        gap: 10px;
         max-width: 860px;
         margin: 0 auto;
       }
@@ -318,29 +316,21 @@
         gap: 0;
       }
 
+      .btn-primary.streaming {
+        background: #3a3a3a;
+      }
+
       .btn-primary:hover:not(:disabled) {
         background: var(--accent-hover);
+      }
+
+      .btn-primary.streaming:hover:not(:disabled) {
+        background: #4a4a4a;
       }
 
       .btn-primary:disabled {
         opacity: 0.45;
         cursor: not-allowed;
-      }
-
-      .btn-ghost {
-        padding: 9px 14px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.03);
-        color: var(--text-soft);
-        border: 1px solid var(--border-strong);
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        align-self: flex-end;
-      }
-
-      .btn-ghost:hover {
-        background: rgba(255, 255, 255, 0.06);
       }
 
       .status-text {
@@ -380,35 +370,89 @@
       .code-block {
         position: relative;
         margin-top: 12px;
-        border-radius: 16px;
-        background: #171717;
-        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: #111111;
+        border: 1px solid rgba(255, 255, 255, 0.08);
         overflow: hidden;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
       }
 
       .code-block-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 12px;
-        font-size: 11px;
+        padding: 10px 14px;
+        font-size: 12px;
         color: var(--text-soft);
-        background: #202020;
-        border-bottom: 1px solid var(--border);
+        background: #1a1a1a;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+
+      .code-header-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .code-header-dots {
+        display: inline-flex;
+        gap: 6px;
+      }
+
+      .code-header-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+      }
+
+      .code-lang-badge {
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: #d4d4d4;
+        text-transform: lowercase;
       }
 
       .code-copy-btn {
         border-radius: 999px;
         padding: 5px 10px;
-        border: 1px solid var(--border-strong);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.03);
         color: var(--text-soft);
         font-size: 11px;
         cursor: pointer;
       }
 
+      .code-copy-btn:hover {
+        background: rgba(255, 255, 255, 0.07);
+      }
+
       .code-copy-btn:active {
         transform: translateY(1px);
+      }
+
+      .code-body {
+        display: grid;
+        grid-template-columns: auto 1fr;
+      }
+
+      .code-line-numbers {
+        margin: 0;
+        padding: 14px 0 14px 14px;
+        min-width: 46px;
+        background: rgba(255, 255, 255, 0.02);
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
+        color: #6f6f6f;
+        text-align: right;
+        user-select: none;
+      }
+
+      .code-line-numbers span {
+        display: block;
+        padding-right: 10px;
+        line-height: 1.6;
       }
 
       .code-block pre {
@@ -419,6 +463,7 @@
         font-size: 13px;
         overflow-x: auto;
         white-space: pre;
+        line-height: 1.6;
       }
 
       .assistant-text a {
@@ -541,9 +586,6 @@
                   <span id="sendLabel">↑</span>
                 </button>
               </div>
-              <button id="stopBtn" class="btn-ghost" style="display: none">
-                <span>停止生成</span>
-              </button>
             </div>
           </div>
         </div>
@@ -554,16 +596,23 @@
       const messagesEl = document.getElementById("messages");
       const userInputEl = document.getElementById("userInput");
       const sendBtn = document.getElementById("sendBtn");
-      const stopBtn = document.getElementById("stopBtn");
+      const sendLabel = document.getElementById("sendLabel");
       const statusText = document.getElementById("statusText");
       const errorBox = document.getElementById("errorBox");
       const productSelect = document.getElementById("productSelect");
       const providerSelect = document.getElementById("providerSelect");
 
-      function updateSendEnabled() {
+      function updateComposerButton() {
         const hasText = userInputEl.value.trim().length > 0;
-        // 流式输出时禁用发送；输入为空也禁用发送
-        sendBtn.disabled = !!currentSource || !hasText;
+        const isStreaming = !!currentSource;
+        sendBtn.disabled = !isStreaming && !hasText;
+        sendBtn.classList.toggle("streaming", isStreaming);
+        sendBtn.setAttribute("aria-label", isStreaming ? "停止生成" : "发送");
+        sendLabel.textContent = isStreaming ? "■" : "↑";
+      }
+
+      function updateSendEnabled() {
+        updateComposerButton();
       }
 
       /** 会话上下文，发送给后端 */
@@ -638,7 +687,25 @@
 
             const header = document.createElement("div");
             header.className = "code-block-header";
-            header.textContent = block.lang ? `代码 (${block.lang})` : "代码";
+
+            const headerLeft = document.createElement("div");
+            headerLeft.className = "code-header-left";
+
+            const dots = document.createElement("div");
+            dots.className = "code-header-dots";
+            for (let i = 0; i < 3; i++) {
+              const dot = document.createElement("span");
+              dot.className = "code-header-dot";
+              dots.appendChild(dot);
+            }
+
+            const langBadge = document.createElement("span");
+            langBadge.className = "code-lang-badge";
+            langBadge.textContent = detectCodeLanguage(block.text, block.lang);
+
+            headerLeft.appendChild(dots);
+            headerLeft.appendChild(langBadge);
+            header.appendChild(headerLeft);
 
             // 每段代码块都有独立按钮
             const btn = document.createElement("button");
@@ -656,13 +723,27 @@
             });
             header.appendChild(btn);
 
+            const codeBody = document.createElement("div");
+            codeBody.className = "code-body";
+
+            const lineNumbers = document.createElement("div");
+            lineNumbers.className = "code-line-numbers";
+            const lines = block.text.split("\n");
+            lines.forEach((_, index) => {
+              const lineNo = document.createElement("span");
+              lineNo.textContent = String(index + 1);
+              lineNumbers.appendChild(lineNo);
+            });
+
             const pre = document.createElement("pre");
             const code = document.createElement("code");
             code.textContent = block.text;
             pre.appendChild(code);
 
             wrapper.appendChild(header);
-            wrapper.appendChild(pre);
+            codeBody.appendChild(lineNumbers);
+            codeBody.appendChild(pre);
+            wrapper.appendChild(codeBody);
             el.appendChild(wrapper);
           } else {
             const textContainer = document.createElement("div");
@@ -707,6 +788,22 @@
           blocks.push({ type: "text", text: text.slice(lastIndex) });
         }
         return blocks;
+      }
+
+      function detectCodeLanguage(codeText, declaredLang) {
+        const lang = (declaredLang || "").trim().toLowerCase();
+        if (lang) return lang;
+
+        const sample = codeText || "";
+        if (
+          /#include\s*<[^>]+>/.test(sample) ||
+          /\bvoid\s+setup\s*\(/.test(sample) ||
+          /\bvoid\s+loop\s*\(/.test(sample) ||
+          /Arduino_[A-Za-z0-9_]+/.test(sample)
+        ) {
+          return "cpp";
+        }
+        return "code";
       }
 
       // 一个轻量的“类 Markdown”行内渲染：支持 **加粗**、`行内代码`、[文字](链接)
@@ -786,13 +883,7 @@
       }
 
       function setStreaming(isStreaming) {
-        if (isStreaming) {
-          sendBtn.disabled = true;
-          stopBtn.style.display = "inline-flex";
-        } else {
-          stopBtn.style.display = "none";
-          updateSendEnabled();
-        }
+        updateComposerButton();
       }
 
       function initConversation() {
@@ -842,6 +933,7 @@
         });
 
         currentSource = es;
+        updateComposerButton();
 
         // 后端推送“已确定产品型号”，前端缓存用于下次对话
         es.addEventListener("product_model", (ev) => {
@@ -944,22 +1036,28 @@
               const { value, done } = await reader.read();
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
+              buffer = buffer.replace(/\r\n/g, "\n");
 
               let cut;
               while ((cut = buffer.indexOf("\n\n")) !== -1) {
-                const rawEvent = buffer.slice(0, cut).trim();
+                const rawEvent = buffer.slice(0, cut);
                 buffer = buffer.slice(cut + 2);
+
+                if (!rawEvent) continue;
 
                 const lines = rawEvent.split("\n");
                 let eventType = "message";
-                let data = "";
+                const dataLines = [];
                 for (const line of lines) {
                   if (line.startsWith("event:")) {
                     eventType = line.slice("event:".length).trim();
                   } else if (line.startsWith("data:")) {
-                    data += line.slice("data:".length) + "\n";
+                    let dataPart = line.slice("data:".length);
+                    if (dataPart.startsWith(" ")) dataPart = dataPart.slice(1);
+                    dataLines.push(dataPart);
                   }
                 }
+                const data = dataLines.join("\n");
                 const ev = { data };
                 if (eventType === "message") {
                   this._emit("message", ev);
@@ -977,17 +1075,18 @@
         }
       }
 
-      sendBtn.addEventListener("click", sendMessage);
+      sendBtn.addEventListener("click", () => {
+        if (currentSource) {
+          currentSource.close();
+          cleanupStream();
+          return;
+        }
+        sendMessage();
+      });
       userInputEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           sendMessage();
-        }
-      });
-      stopBtn.addEventListener("click", () => {
-        if (currentSource) {
-          currentSource.close();
-          cleanupStream();
         }
       });
 
