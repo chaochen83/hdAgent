@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, Literal, Optional
 
@@ -25,7 +26,8 @@ def _resolve_model_name(provider: str, model: Optional[str]) -> str:
     return os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 
-def _format_prompt(messages: list[dict]) -> str:
+def _format_messages_for_markdown_log(messages: list[dict]) -> str:
+    # 生成写入日志文件的 Markdown 文本，方便在 logs/*.md 里按消息逐段查看。
     blocks: list[str] = []
     for idx, message in enumerate(messages, start=1):
         if not isinstance(message, dict):
@@ -36,7 +38,31 @@ def _format_prompt(messages: list[dict]) -> str:
     return "\n\n".join(blocks) if blocks else "(empty)"
 
 
+def _format_messages_for_terminal_log(messages: list[dict]) -> str:
+    # 生成终端日志文本。这里不用 Markdown code fence，
+    # 改成更直观的起止分隔符，减少 prompt 在 terminal 里“糊成一团”的感觉。
+    blocks: list[str] = []
+    for idx, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role", "unknown")
+        content = message.get("content", "")
+        blocks.append(
+            "\n".join(
+                [
+                    f"----- MESSAGE {idx} BEGIN -----",
+                    f"role: {role}",
+                    "content:",
+                    content or "(empty)",
+                    f"----- MESSAGE {idx} END -----",
+                ]
+            )
+        )
+    return "\n\n".join(blocks) if blocks else "(empty)"
+
+
 def _append_llm_log(*, provider: str, model: str, prompt: str, response: str) -> None:
+    # 追加到按天分文件的 Markdown 日志中，便于后续回看完整请求与响应。
     try:
         os.makedirs(LOGS_DIR, exist_ok=True)
         now = datetime.now()
@@ -55,18 +81,107 @@ def _append_llm_log(*, provider: str, model: str, prompt: str, response: str) ->
         pass
 
 
+def _summarize_code_block(match: re.Match[str]) -> str:
+    # 将 fenced code block 压缩成短摘要，保留语言、规模、首个有效语句，
+    # 避免把整段代码原样塞进 intent prompt 里浪费 token。
+    raw = match.group(1) or ""
+    stripped = raw.strip("\n")
+    if not stripped:
+        return "[code block omitted]"
+
+    lines = [line.rstrip() for line in stripped.splitlines()]
+    language = ""
+    body_lines = lines
+    first_line = lines[0].strip() if lines else ""
+
+    # Markdown 代码块的第一行如果只是语言标记，则把它和真正代码正文拆开处理。
+    if lines and re.fullmatch(r"[A-Za-z0-9_+-]+", first_line):
+        language = first_line
+        body_lines = lines[1:]
+
+    # 用首个非空代码行做 preview，帮助模型快速理解这段代码大概在做什么。
+    non_empty = [line.strip() for line in body_lines if line.strip()]
+    preview = non_empty[0][:80] if non_empty else ""
+    line_count = len(body_lines)
+    parts = ["[code block omitted"]
+    if language:
+        parts.append(f"lang={language}")
+    parts.append(f"lines={line_count}")
+    if preview:
+        parts.append(f"preview={preview}")
+    return ", ".join(parts) + "]"
+
+
+def _summarize_message_content(content: str, max_chars: int = 320) -> str:
+    # 先把消息里的大代码块替换成摘要，再做长度裁剪，给 intent 分类保留关键信息。
+    if not content:
+        return ""
+
+    summarized = re.sub(r"```(.*?)```", _summarize_code_block, content, flags=re.DOTALL)
+    summarized = re.sub(r"\s+", " ", summarized).strip()
+
+    if len(summarized) <= max_chars:
+        return summarized
+    # 超长文本只保留前半段核心内容，避免历史上下文无限膨胀。
+    return summarized[: max_chars - 15].rstrip() + "... [truncated]"
+
+
+def _build_recent_history_context(messages: list[ChatMessage], max_turns: int = 5) -> str:
+    # 把消息流重建成“用户一轮 + 助手若干回复”的对话轮次，
+    # 只保留最近几轮历史，兼顾上下文连续性和 token 成本。
+    turns: list[dict[str, list[str]]] = []
+    current_turn: Optional[dict[str, list[str]]] = None
+
+    for message in messages:
+        if message.role == "system":
+            continue
+        if message.role == "user":
+            # 每遇到一个 user 消息，就开启一个新的 turn。
+            current_turn = {"user": [message.content], "assistant": []}
+            turns.append(current_turn)
+            continue
+        if current_turn is None:
+            # 兜底处理：如果历史异常地以 assistant 开头，也单独归入一个 turn。
+            current_turn = {"user": [], "assistant": []}
+            turns.append(current_turn)
+        current_turn["assistant"].append(message.content)
+
+    if not turns:
+        return "(empty)"
+
+    previous_turns = turns[:-1][-max_turns:]
+    if not previous_turns:
+        return "(no previous turns)"
+
+    blocks: list[str] = []
+    for idx, turn in enumerate(previous_turns, start=1):
+        # 每一轮内部继续做内容摘要，避免历史里已有长文本或长代码。
+        user_text = _summarize_message_content("\n".join(turn["user"]))
+        assistant_text = _summarize_message_content("\n".join(turn["assistant"]))
+        block_lines = [f"Turn {idx}"]
+        if user_text:
+            block_lines.append(f"user: {user_text}")
+        if assistant_text:
+            block_lines.append(f"assistant: {assistant_text}")
+        blocks.append("\n".join(block_lines))
+    return "\n\n".join(blocks)
+
+
 def _log_llm_interaction(*, provider: str, model: str, messages: list[dict], response: str) -> None:
+    # 同时输出 terminal 日志和 markdown 日志。
+    # terminal 强调可扫读性，文件日志强调结构化留档。
     try:
-        prompt = _format_prompt(messages)
+        terminal_prompt = _format_messages_for_terminal_log(messages)
+        markdown_prompt = _format_messages_for_markdown_log(messages)
         print("\n===== LLM LOG BEGIN =====")
         print(f"llm={provider}")
         print(f"model={model}")
-        print("prompt:")
-        print(prompt)
+        print("prompt messages:")
+        print(terminal_prompt)
         print("response:")
         print(response or "(empty)")
         print("===== LLM LOG END =====\n")
-        _append_llm_log(provider=provider, model=model, prompt=prompt, response=response)
+        _append_llm_log(provider=provider, model=model, prompt=markdown_prompt, response=response)
     except Exception:
         pass
 
@@ -116,15 +231,17 @@ async def detect_intent_with_llm(
     current_product_model: Optional[str],
     product_model_list: list[str],
 ) -> Dict[str, Any]:
-    """
-    Return JSON:
-      {"intent":"set_product_model"|"generate_code"|"general_chat","product_model":"...", "reply":"..."}
-    """
+    # 用独立的分类 prompt 判断当前请求属于：
+    # 选产品型号、生成代码，还是普通聊天。
     last_user = ""
     for m in reversed(messages):
+        # 只取最后一条 user 消息作为当前轮主问题，
+        # 历史上下文则由 recent_history 单独提供。
         if m.role == "user":
             last_user = m.content
             break
+
+    recent_history = _build_recent_history_context(messages)
 
     system_prompt = (
         "You are an intent classifier for Makerfabs chat.\n"
@@ -132,14 +249,17 @@ async def detect_intent_with_llm(
         "Allowed intent values: set_product_model, generate_code, general_chat.\n"
         "If user is selecting a product model, map only to one exact item from product_model_list.\n"
         "If user is asking for code, set intent to generate_code.\n"
+        "Pay attention to the recent conversation history to resolve follow-up requests.\n"
         "Never output any model not in product_model_list.\n"
         "Output strict JSON only. No need to use ```json or any Markdown."
     )
     user_prompt = (
         f"current_product_model={current_product_model}\n"
         f"product_model_list={json.dumps(product_model_list, ensure_ascii=False)}\n"
+        f"recent_history={json.dumps(recent_history, ensure_ascii=False)}\n"
         f"last_user_message={json.dumps(last_user, ensure_ascii=False)}\n\n"
         "Return JSON with keys: intent, product_model, reply.\n"
+        "- recent_history contains up to 5 previous chat turns, with long code blocks summarized.\n"
         "- reply only used when intent=set_product_model, format: 明白了，您要问的是<型号>。\n"
         "- for other intents reply should be empty string."
     )
@@ -148,6 +268,7 @@ async def detect_intent_with_llm(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+    # intent 分类单独走一次非流式调用，避免影响正式回答链路。
     result = await _chat_completion_non_stream(provider=provider, model=model, messages=req_messages)
     text = (result or "").strip()
 
@@ -160,6 +281,7 @@ async def detect_intent_with_llm(
         reply = parsed.get("reply", "")
 
 
+        # 模型即使返回了 product_model，也必须再次校验是否在白名单里。
         if product_model and product_model not in product_model_list:
             product_model = None
         if intent not in {"set_product_model", "generate_code", "general_chat"}:

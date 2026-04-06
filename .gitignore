@@ -1,4 +1,5 @@
 /.venv
+/.pycache
 .env
 backend/__pycache__/
 /logs
