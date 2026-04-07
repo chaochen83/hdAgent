@@ -1,5 +1,5 @@
 /.venv
 /.pycache
 .env
-backend/__pycache__/
+**/__pycache__/
 /logs

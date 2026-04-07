@@ -1,26 +1,36 @@
 # hdAgent
 
-一个基于 FastAPI + LangGraph 的 Makerfabs 硬件 AI 助手项目，用于围绕指定开发板进行问答、型号识别和代码生成。当前项目内置了一个简单前端页面，后端通过流式接口返回模型输出，适合做板卡技术支持、示例代码生成和产品知识问答。
+`hdAgent` 是一个围绕 Makerfabs 板卡支持场景构建的 Agent 项目。当前已经从最初的单页聊天 Demo，升级为“登录后才能进入聊天”的前后端一体化结构，第一阶段重点完成了：
 
-## 功能特性
+- Google 登录与邮箱验证码登录
+- 用户会话与登录态持久化
+- `Makerfabs Agent` Recent 聊天记录
+- 用户 Usage / Profile 基础接口
+- PostgreSQL + pgvector 的数据库初始化脚本
 
-- 基于 `FastAPI` 提供 Web 服务与流式聊天接口
-- 基于 `LangGraph` 处理意图识别与对话路由
-- 支持多模型提供方切换：
-  - `DeepSeek`
+知识库模块的数据库结构已经预留，但上传、解析、RAG 检索会放到下一阶段继续接入。
+
+## 当前能力
+
+- 基于 `FastAPI` 提供 Web 服务
+- 基于 `LangGraph` 做产品型号识别与聊天意图路由
+- 支持多模型提供方：
   - `OpenAI`
+  - `DeepSeek`
   - `Claude`
   - `Qwen`
-- 支持根据用户输入识别产品型号
-- 支持按产品型号注入设备知识与提示词
-- 内置简单前端页面，可直接在浏览器中进行交互
+- 支持 Google OAuth 登录
+- 支持邮箱 6 位验证码登录
+- 支持聊天 Session 持久化与 Recent 列表
+- 支持按用户统计最近 7 天 token usage
+- 预留知识库表结构与 `pgvector` 向量字段
 
 ## 当前支持的产品
 
 - `MaTouch_ESP32S3`
 - `ESP32-S3-WROOM-1`
 
-对应知识文件位于：
+对应知识文件：
 
 - `backend/product_knowledge/matouch_esp32s3.md`
 - `backend/product_knowledge/esp32_s3_wroom_1.md`
@@ -30,14 +40,25 @@
 ```text
 hdAgent/
 ├── backend/
-│   ├── fastapi_app.py         # FastAPI 应用入口
-│   ├── langgraph_agent.py     # LangGraph 路由逻辑
-│   ├── llm_providers.py       # 多模型提供方封装
-│   ├── product_knowledge.py   # 产品列表、别名、知识文件读取
-│   ├── schemas.py             # Pydantic 数据模型
-│   └── product_knowledge/     # 产品知识库
+│   ├── app/
+│   │   ├── api/                  # 业务路由层
+│   │   ├── core/                 # 配置、数据库、基础安全工具
+│   │   ├── schemas/              # 阶段一的新接口请求/响应模型
+│   │   ├── services/             # 认证、聊天、邮件发送等服务逻辑
+│   │   └── main.py               # 当前 FastAPI 主入口
+│   ├── sql/
+│   │   └── 001_init_postgres.sql # PostgreSQL + pgvector 初始化脚本
+│   ├── langgraph_agent.py        # LangGraph 意图路由
+│   ├── llm_providers.py          # 多模型调用与 prompt 组装
+│   ├── product_knowledge.py      # 产品型号、别名、知识文件读取
+│   ├── schemas.py                # 旧聊天链路的 Pydantic 模型
+│   ├── fastapi_app.py            # 兼容旧入口，转发到 app.main
+│   └── main.py                   # 兼容旧入口，转发到 app.main
 ├── frontend/
-│   └── index.html             # 前端页面
+│   ├── index.html                # 前端入口页
+│   ├── config.js                 # 前端静态配置
+│   ├── app.js                    # 聊天页/登录页逻辑
+│   └── styles.css                # 页面样式
 ├── requirements.txt
 ├── .env.sample
 └── README.md
@@ -45,140 +66,186 @@ hdAgent/
 
 ## 运行环境
 
-- Python 3.10 及以上
+- Python 3.12+ 推荐
+- PostgreSQL 15+ 推荐
 - 建议使用虚拟环境
 
 ## 安装依赖
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 环境变量配置
+## 环境变量
 
-先复制示例配置：
+先复制模板：
 
 ```bash
 cp .env.sample .env
 ```
 
-然后至少配置一个模型提供方的 API Key。
-
-### DeepSeek
+阶段一至少建议配置：
 
 ```env
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-DEEPSEEK_MODEL=deepseek-chat
+APP_NAME=Makerfabs Agent
+APP_URL=http://127.0.0.1:8000
+DATABASE_URL=postgresql://hdagent_app:change_me_now@127.0.0.1:5432/hdagent
+SESSION_SECRET=change-me-in-production
 ```
 
-### OpenAI
+### Google 登录
+
+```env
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GOOGLE_REDIRECT_URI=http://127.0.0.1:8000/api/auth/google/callback
+```
+
+### 邮箱验证码登录
+
+开发期本地调试建议：
+
+```env
+EMAIL_PROVIDER=console
+EMAIL_DEBUG_EXPOSE_CODE=true
+```
+
+如果要接真实邮箱 SMTP：
+
+```env
+EMAIL_PROVIDER=smtp
+EMAIL_FROM=no-reply@example.com
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_USE_TLS=true
+```
+
+### LLM Provider 示例
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4.1-mini
-```
+OPENAI_MODEL=gpt-5.4
 
-### Claude
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-chat
 
-```env
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 CLAUDE_MODEL=claude-3-5-sonnet-latest
-```
 
-### Qwen
-
-```env
 QWEN_API_KEY=your_qwen_api_key_here
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MODEL=qwen-plus
 ```
 
-## 启动项目
+## 数据库初始化
 
-在项目根目录执行：
+完整 SQL 位于：
+
+- `backend/sql/001_init_postgres.sql`
+
+执行方式：
 
 ```bash
-uvicorn backend.fastapi_app:app --reload
+psql -U postgres -f backend/sql/001_init_postgres.sql
+```
+
+该脚本会完成：
+
+- 创建 `hdagent_app` 角色
+- 创建 `hdagent` 数据库
+- 启用 `vector`、`pgcrypto`、`citext` 扩展
+- 创建用户、登录、聊天、usage、知识库预留表
+
+如果你本机还没装 `pgvector`：
+
+- Docker 方式可直接使用 `pgvector/pgvector:pg16`
+- Homebrew PostgreSQL 可先安装 `pgvector`，再执行 `CREATE EXTENSION vector;`
+
+## 启动项目
+
+推荐入口：
+
+```bash
+.venv/bin/uvicorn backend.app.main:app --reload
+```
+
+兼容旧入口也可继续使用：
+
+```bash
+.venv/bin/uvicorn backend.fastapi_app:app --reload
 ```
 
 启动后访问：
 
-- 首页: `http://127.0.0.1:8000/`
-- 健康检查: `http://127.0.0.1:8000/health`
-- 产品型号列表: `http://127.0.0.1:8000/product-model-list`
+- 首页：`http://127.0.0.1:8000/`
+- 健康检查：`http://127.0.0.1:8000/health`
+- 启动信息：`http://127.0.0.1:8000/api/bootstrap`
+- 当前登录态：`http://127.0.0.1:8000/api/auth/me`
+- 产品型号列表：`http://127.0.0.1:8000/product-model-list`
 
-## 接口说明
+## 阶段一核心接口
 
-### `POST /chat/stream`
+### 认证
 
-流式返回聊天结果，返回类型为 `text/event-stream`。
+- `GET /api/auth/config`
+- `GET /api/auth/me`
+- `GET /api/auth/google/login`
+- `GET /api/auth/google/callback`
+- `POST /api/auth/email/request-code`
+- `POST /api/auth/email/verify-code`
+- `POST /api/auth/logout`
 
-请求示例：
+### 聊天
 
-```json
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "帮我写一个 MaTouch_ESP32S3 的触摸屏示例"
-    }
-  ],
-  "current_product_model": "MaTouch_ESP32S3",
-  "provider": "deepseek",
-  "model": "deepseek-chat"
-}
-```
+- `GET /api/chat/sessions`
+- `POST /api/chat/sessions`
+- `GET /api/chat/sessions/{session_id}/messages`
+- `POST /api/chat/sessions/{session_id}/stream`
 
-主要事件类型：
+SSE 主要事件：
 
-- `product_model`: 当前识别出的产品型号
-- `token`: 模型流式输出片段
-- `error`: 服务器错误信息
-- `end`: 输出结束
+- `product_model`
+- `token`
+- `error`
+- `end`
 
-### `GET /product-model-list`
+### 用户
 
-返回当前支持的产品型号列表。
+- `GET /api/user/profile`
+- `GET /api/user/usage/daily`
 
-### `GET /health`
+## 聊天主流程
 
-用于健康检查，返回：
+1. 用户先完成 Google 登录或邮箱验证码登录
+2. 前端获取 `/api/auth/me` 确认当前登录态
+3. 进入聊天页后读取 `/api/chat/sessions`
+4. 新建聊天时写入 `chat_session`
+5. 用户发消息后写入 `chat_message`
+6. LangGraph 判断本轮是设置产品、生成代码还是普通聊天
+7. 根据当前产品型号拼接系统提示词与产品知识
+8. 调用对应 LLM 流式输出
+9. 将 assistant 回复与 usage 写回数据库
 
-```json
-{
-  "ok": true
-}
-```
+## 后续计划
 
-## 对话处理流程
-
-项目大致流程如下：
-
-1. 前端发送用户消息到 `/chat/stream`
-2. LangGraph 先执行意图识别
-3. 如果识别到用户在设置产品型号，则记录当前型号并直接回复
-4. 如果尚未选择产品型号，则先追问用户当前产品
-5. 如果已确定产品型号，则拼接系统提示词和产品知识
-6. 调用对应 LLM 提供方进行流式输出
+- 知识库列表页
+- 上传弹窗与文件解析队列
+- 文档 chunk、embedding、向量检索
+- 聊天接入 RAG
+- 手机验证码登录
 
 ## 开发说明
 
-- 产品型号与别名定义在 `backend/product_knowledge.py`
-- 新增板卡时，建议同步补充：
-  - `PRODUCTS` 中的型号、别名、提示语
-  - `backend/product_knowledge/` 下的知识文件
-- 模型请求封装位于 `backend/llm_providers.py`
-- 当前前端为单文件 HTML，适合快速原型验证
-
-## 已知情况
-
-- `backend/main.py` 中存在一份较老的重复/实验性代码，目前实际推荐入口是 `backend.fastapi_app:app`
-- 前端直接由 FastAPI 挂载并提供静态访问
-- 运行前请确保至少配置了一个可用模型的 API Key，否则接口无法正常生成内容
+- 现阶段前端仍然是轻量原生 JS + CSS，便于快速迭代
+- 现阶段主业务入口是 `backend/app/main.py`
+- `backend/fastapi_app.py` 与 `backend/main.py` 仅保留兼容作用
+- 新增板卡时，建议同步更新 `backend/product_knowledge.py` 与 `backend/product_knowledge/`
 
 ## License
 
-如果你准备开源这个项目，建议在仓库中补充明确的许可证文件，例如 `MIT`。
+如果准备开源，建议补充明确许可证，例如 `MIT`。
