@@ -236,17 +236,6 @@ button {
   color: #b9f3df;
 }
 
-.toast-stack {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 80;
-  display: grid;
-  gap: 10px;
-  width: min(420px, calc(100vw - 32px));
-  pointer-events: none;
-}
-
 .toast {
   display: flex;
   align-items: flex-start;
@@ -256,6 +245,24 @@ button {
   box-shadow: var(--shadow);
   pointer-events: auto;
   backdrop-filter: blur(12px);
+}
+
+.content-toast-wrap {
+  position: absolute;
+  top: 16px;
+  left: 24px;
+  right: 24px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.toast-stack {
+  display: grid;
+  gap: 10px;
+  width: min(520px, 100%);
+  pointer-events: none;
 }
 
 .toast-error {
@@ -457,6 +464,13 @@ button {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+.login-panel-inner {
+  width: min(460px, 100%);
+  display: grid;
+  gap: 14px;
 }
 
 .chat-feed {
@@ -659,5 +673,10 @@ button {
     right: 0;
     bottom: calc(100% + 10px);
     width: 100%;
+  }
+
+  .content-toast-wrap {
+    left: 14px;
+    right: 14px;
   }
 }

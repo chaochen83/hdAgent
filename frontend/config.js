@@ -1,3 +1,3 @@
 window.__APP_CONFIG__ = {
-  assetVersion: "20260407d",
+  assetVersion: "20260409d",
 };

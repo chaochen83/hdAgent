@@ -395,7 +395,6 @@ function renderLogin() {
   const phoneEnabled = state.authConfig?.phoneLoginEnabled;
 
   app.innerHTML = `
-    ${renderBanner()}
     <div class="login-shell">
       <section class="login-hero">
         <div class="brand-lockup">
@@ -416,37 +415,40 @@ function renderLogin() {
         </div>
       </section>
       <section class="login-panel">
-        <div class="auth-card stack-lg">
-          <div class="stack">
-            <h2>登录 / 注册</h2>
-            <div class="muted">Google 登录和邮箱验证码已经预留成可直接接生产配置的链路。</div>
-          </div>
-          <div class="stack">
-            <button class="button" id="googleLoginBtn" ${googleEnabled ? "" : "disabled"}>继续使用 Google</button>
-            <div class="auth-divider">或者使用邮箱</div>
-            <div class="field">
-              <label for="emailInput">邮箱</label>
-              <input class="input" id="emailInput" type="email" placeholder="you@example.com" value="${escapeHtml(state.email)}" />
+        <div class="login-panel-inner">
+          ${renderBanner()}
+          <div class="auth-card stack-lg">
+            <div class="stack">
+              <h2>登录 / 注册</h2>
+              <div class="muted">Google 登录和邮箱验证码已经预留成可直接接生产配置的链路。</div>
             </div>
-            ${
-              state.authMode === "verify-code"
-                ? `
-                  <div class="field">
-                    <label for="codeInput">6 位验证码</label>
-                    <input class="input" id="codeInput" type="text" maxlength="6" placeholder="请输入验证码" />
-                  </div>
-                  <button class="button" id="verifyCodeBtn">验证并登录</button>
-                `
-                : `<button class="button button-secondary" id="requestCodeBtn">发送验证码</button>`
-            }
-            ${
-              state.debugCode
-                ? `<div class="dev-note">当前使用 console 邮件模式，开发验证码：<strong>${escapeHtml(state.debugCode)}</strong></div>`
-                : ""
-            }
-            <button class="button button-secondary" id="phoneLoginBtn" disabled>
-              手机登录 ${phoneEnabled ? "" : '<span class="badge badge-warning">开发中</span>'}
-            </button>
+            <div class="stack">
+              <button class="button" id="googleLoginBtn" ${googleEnabled ? "" : "disabled"}>继续使用 Google</button>
+              <div class="auth-divider">或者使用邮箱</div>
+              <div class="field">
+                <label for="emailInput">邮箱</label>
+                <input class="input" id="emailInput" type="email" placeholder="you@example.com" value="${escapeHtml(state.email)}" />
+              </div>
+              ${
+                state.authMode === "verify-code"
+                  ? `
+                    <div class="field">
+                      <label for="codeInput">6 位验证码</label>
+                      <input class="input" id="codeInput" type="text" maxlength="6" placeholder="请输入验证码" />
+                    </div>
+                    <button class="button" id="verifyCodeBtn">验证并登录</button>
+                  `
+                  : `<button class="button button-secondary" id="requestCodeBtn">发送验证码</button>`
+              }
+              ${
+                state.debugCode
+                  ? `<div class="dev-note">当前使用 console 邮件模式，开发验证码：<strong>${escapeHtml(state.debugCode)}</strong></div>`
+                  : ""
+              }
+              <button class="button button-secondary" id="phoneLoginBtn" disabled>
+                手机登录 ${phoneEnabled ? "" : '<span class="badge badge-warning">开发中</span>'}
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -500,7 +502,6 @@ function renderApp() {
   const knowledgeEnabled = state.bootstrap?.features?.knowledgeBase;
 
   app.innerHTML = `
-    ${renderBanner()}
     <div class="app-shell">
       <aside class="sidebar">
         <div class="sidebar-brand">
@@ -637,6 +638,9 @@ function renderApp() {
           state.view === "chat"
             ? `
               <section class="chat-layout">
+                <div class="content-toast-wrap">
+                  ${renderBanner()}
+                </div>
                 <div class="chat-feed">
                   ${renderMessages()}
                 </div>
@@ -656,6 +660,7 @@ function renderApp() {
             `
             : `
               <section class="knowledge-placeholder">
+                ${renderBanner()}
                 <h2>知识库模块排期中</h2>
                 <p class="muted">你要求的上传弹窗、文件解析、异步入库和向量检索会作为下一阶段来接。数据库表和 pgvector 基础结构我已经先预留好了。</p>
                 <div class="dev-note">下一步会补：上传 5 个文件、后台解析任务、向量写入、列表页和筛选器。</div>
