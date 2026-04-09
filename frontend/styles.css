@@ -650,6 +650,7 @@ button {
 .admin-layout {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   position: relative;
 }
 
@@ -659,11 +660,76 @@ button {
   padding: 24px;
   display: grid;
   gap: 18px;
+  min-width: 0;
+  align-content: start;
 }
 
 .admin-section {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+.admin-subnav-card {
+  position: sticky;
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: rgba(23, 23, 23, 0.82);
+  padding: 10px;
+  min-width: 0;
+  height: 66px;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  top: 0;
+  z-index: 5;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
+}
+
+.admin-subnav-card::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--border-strong) 12%, var(--border-strong) 88%, transparent 100%);
+  pointer-events: none;
+}
+
+.admin-subnav {
+  display: flex;
+  gap: 10px;
+  flex-wrap: nowrap;
+  align-items: center;
+  height: 44px;
+  width: max-content;
+}
+
+.admin-subnav-item {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-soft);
+  border-radius: 14px;
+  height: 44px;
+  line-height: 24px;
+  padding: 9px 14px;
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+
+.admin-subnav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.admin-subnav-item.active {
+  background: rgba(16, 163, 127, 0.14);
+  border-color: rgba(16, 163, 127, 0.28);
+  color: white;
 }
 
 .admin-section-header {
@@ -679,6 +745,7 @@ button {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .stats-grid {
@@ -693,6 +760,13 @@ button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
   padding: 18px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.table-card {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .stat-card span {
@@ -771,6 +845,7 @@ button {
   display: grid;
   grid-template-columns: 300px 1fr;
   gap: 16px;
+  min-width: 0;
 }
 
 .admin-chat-list {
@@ -779,6 +854,7 @@ button {
   align-content: start;
   max-height: 560px;
   overflow: auto;
+  min-width: 0;
 }
 
 .admin-chat-item {
@@ -809,12 +885,19 @@ button {
   min-height: 240px;
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .admin-message {
   border-radius: 18px;
   border: 1px solid var(--border);
   padding: 14px;
+}
+
+.admin-chat-filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 960px) {

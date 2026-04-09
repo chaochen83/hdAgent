@@ -21,14 +21,17 @@ const state = {
   sending: false,
   userPanelOpen: false,
   usageItems: [],
+  adminSection: "overview",
   adminRange: "7d",
   adminOverview: null,
   adminUsers: [],
   adminChats: [],
   adminChatMessages: [],
   adminSelectedChatId: null,
+  adminChatUserFilter: "",
   inviteCodes: [],
   adminScrollTop: 0,
+  adminForceScrollTop: false,
 };
 
 let messageTimer = null;
@@ -122,6 +125,17 @@ function saveAdminScrollPosition() {
 function restoreAdminScrollPosition() {
   const panel = document.querySelector(".admin-scroll");
   if (panel) {
+    if (state.adminForceScrollTop) {
+      panel.scrollTop = 0;
+      requestAnimationFrame(() => {
+        const nextPanel = document.querySelector(".admin-scroll");
+        if (nextPanel) {
+          nextPanel.scrollTop = 0;
+        }
+      });
+      state.adminForceScrollTop = false;
+      return;
+    }
     panel.scrollTop = state.adminScrollTop || 0;
   }
 }
@@ -289,19 +303,53 @@ async function loadUsage() {
 
 async function loadAdminData() {
   if (state.user?.role !== "admin") return;
-  saveAdminScrollPosition();
-  const [overview, users, chats, inviteCodes] = await Promise.all([
-    apiFetch(`/api/admin/overview?range=${encodeURIComponent(state.adminRange)}`),
-    apiFetch("/api/admin/users"),
-    apiFetch(`/api/admin/chats?range=${encodeURIComponent(state.adminRange)}`),
-    apiFetch("/api/admin/invite-codes"),
-  ]);
-  state.adminOverview = overview;
-  state.adminUsers = users.items || [];
-  state.adminChats = chats.items || [];
-  state.inviteCodes = inviteCodes.items || [];
-  if (state.adminSelectedChatId) {
-    await openAdminChat(state.adminSelectedChatId);
+  return loadAdminSection(state.adminSection);
+}
+
+async function loadAdminSection(section, options = {}) {
+  if (state.user?.role !== "admin") return;
+  const preserveScroll = options.preserveScroll !== false;
+  if (preserveScroll) {
+    saveAdminScrollPosition();
+  } else {
+    state.adminScrollTop = 0;
+    state.adminForceScrollTop = true;
+  }
+  state.adminSection = section;
+  if (section === "overview") {
+    state.adminOverview = await apiFetch(`/api/admin/overview?range=${encodeURIComponent(state.adminRange)}`);
+    return;
+  }
+  if (section === "invites") {
+    const inviteCodes = await apiFetch("/api/admin/invite-codes");
+    state.inviteCodes = inviteCodes.items || [];
+    return;
+  }
+  if (section === "users") {
+    const users = await apiFetch("/api/admin/users");
+    state.adminUsers = users.items || [];
+    return;
+  }
+  if (section === "chats") {
+    if (!state.adminUsers.length) {
+      const users = await apiFetch("/api/admin/users");
+      state.adminUsers = users.items || [];
+    }
+    const query = new URLSearchParams({ range: state.adminRange });
+    if (state.adminChatUserFilter) {
+      query.set("user_id", state.adminChatUserFilter);
+    }
+    const chats = await apiFetch(`/api/admin/chats?${query.toString()}`);
+    state.adminChats = chats.items || [];
+    const stillExists = state.adminChats.find((item) => item.id === state.adminSelectedChatId);
+    if (!stillExists) {
+      state.adminSelectedChatId = null;
+      state.adminChatMessages = [];
+      return;
+    }
+    if (state.adminSelectedChatId) {
+      await openAdminChat(state.adminSelectedChatId);
+    }
   }
 }
 
@@ -318,7 +366,7 @@ async function updateAdminUser(userId, patch) {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
-  await loadAdminData();
+  await loadAdminSection("users");
   await loadProfile();
   setMessage("success", "用户配置已更新。");
 }
@@ -338,7 +386,7 @@ async function createInviteCode() {
       max_uses: 1,
     }),
   });
-  await loadAdminData();
+  await loadAdminSection("invites");
   setMessage("success", "邀请码已创建。");
 }
 
@@ -674,173 +722,226 @@ function renderLineChart(items, rangeKey) {
 function renderAdmin() {
   const overview = state.adminOverview;
   const summary = overview?.summary || { total_tokens: 0, active_users: 0, average_tokens: 0 };
+  const section = state.adminSection;
+  const tabs = [
+    { key: "overview", label: "Token 总览" },
+    { key: "invites", label: "邀请码" },
+    { key: "users", label: "用户用量" },
+    { key: "chats", label: "聊天记录" },
+  ];
   return `
     <section class="admin-layout">
       <div class="content-toast-wrap">
         ${renderBanner()}
       </div>
       <div class="admin-scroll">
-        <section class="admin-section">
-          <div class="admin-section-header">
-            <div>
-              <h2>Token 总览</h2>
-              <div class="muted">可切换 1 天、7 天、30 天区间。</div>
-            </div>
-            <div class="range-switch">
-              ${["1d", "7d", "30d"]
-                .map(
-                  (range) => `<button class="button button-secondary ${range === state.adminRange ? "is-active" : ""}" data-admin-range="${range}">${range}</button>`,
-                )
-                .join("")}
-            </div>
-          </div>
-          <div class="stats-grid">
-            <div class="stat-card"><span>总 token</span><strong>${Number(summary.total_tokens).toLocaleString()}</strong></div>
-            <div class="stat-card"><span>活跃用户</span><strong>${Number(summary.active_users).toLocaleString()}</strong></div>
-            <div class="stat-card"><span>人均 token</span><strong>${Number(summary.average_tokens).toLocaleString()}</strong></div>
-          </div>
-          <div class="chart-card">${renderLineChart(overview?.timeline || [], state.adminRange)}</div>
-        </section>
-
-        <section class="admin-section">
-          <div class="admin-section-header">
-            <div>
-              <h2>邀请码</h2>
-              <div class="muted">新账号必须通过邀请码注册。</div>
-            </div>
-          </div>
-          <div class="invite-create-row">
-            <input class="input" id="newInviteCodeInput" type="text" placeholder="例如 maker-2026-001" />
-            <select class="select" id="newInviteQuotaSelect">
-              <option value="">basic</option>
-              <option value="pro">pro</option>
-              <option value="vip">vip</option>
-            </select>
-            <button class="button" id="createInviteBtn">创建邀请码</button>
-          </div>
-          <div class="table-card">
-            <table class="data-table">
-              <thead><tr><th>邀请码</th><th>档位</th><th>使用</th><th>状态</th></tr></thead>
-              <tbody>
-                ${
-                  state.inviteCodes.length
-                    ? state.inviteCodes
-                        .map(
-                          (item) => `
-                            <tr>
-                              <td>${escapeHtml(item.code)}</td>
-                              <td>${escapeHtml(item.assigned_quota_tier_code || "basic")}</td>
-                              <td>${item.used_count}/${item.max_uses}</td>
-                              <td>${escapeHtml(item.status)}</td>
-                            </tr>
-                          `,
-                        )
-                        .join("")
-                    : `<tr><td colspan="4" class="muted">暂无邀请码。</td></tr>`
-                }
-              </tbody>
-            </table>
+        <section class="admin-subnav-card">
+          <div class="admin-subnav">
+            ${tabs
+              .map(
+                (tab) => `
+                  <button class="admin-subnav-item ${tab.key === section ? "active" : ""}" data-admin-section="${tab.key}">${tab.label}</button>
+                `,
+              )
+              .join("")}
           </div>
         </section>
-
-        <section class="admin-section">
-          <div class="admin-section-header">
-            <div>
-              <h2>用户用量</h2>
-              <div class="muted">支持直接切换角色、档位和无限额度。</div>
-            </div>
-          </div>
-          <div class="table-card">
-            <table class="data-table">
-              <thead>
-                <tr><th>用户</th><th>角色</th><th>档位</th><th>今日</th><th>7天</th><th>30天</th><th>无限</th></tr>
-              </thead>
-              <tbody>
-                ${
-                  state.adminUsers.length
-                    ? state.adminUsers
-                        .map(
-                          (item) => `
-                            <tr>
-                              <td>
-                                <strong>${escapeHtml(item.display_name || "")}</strong>
-                                <div class="muted">${escapeHtml(item.email || "")}</div>
-                              </td>
-                              <td>
-                                <select class="select admin-user-role" data-user-id="${item.id}">
-                                  ${["user", "admin"]
-                                    .map((role) => `<option value="${role}" ${role === item.role ? "selected" : ""}>${role}</option>`)
-                                    .join("")}
-                                </select>
-                              </td>
-                              <td>
-                                <select class="select admin-user-tier" data-user-id="${item.id}">
-                                  ${["basic", "pro", "vip"]
-                                    .map((tier) => `<option value="${tier}" ${tier === (item.quota_tier_code || "basic") ? "selected" : ""}>${tier}</option>`)
-                                    .join("")}
-                                </select>
-                              </td>
-                              <td>${Number(item.today_tokens || 0).toLocaleString()}</td>
-                              <td>${Number(item.last_7d_tokens || 0).toLocaleString()}</td>
-                              <td>${Number(item.last_30d_tokens || 0).toLocaleString()}</td>
-                              <td><input type="checkbox" class="admin-user-unlimited" data-user-id="${item.id}" ${item.is_unlimited ? "checked" : ""} /></td>
-                            </tr>
-                          `,
-                        )
-                        .join("")
-                    : `<tr><td colspan="7" class="muted">暂无用户数据。</td></tr>`
-                }
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="admin-section">
-          <div class="admin-section-header">
-            <div>
-              <h2>聊天记录</h2>
-              <div class="muted">查看历史会话和消息明细。</div>
-            </div>
-          </div>
-          <div class="admin-chat-grid">
-            <div class="table-card admin-chat-list">
-              ${
-                state.adminChats.length
-                  ? state.adminChats
+        ${
+          section === "overview"
+            ? `
+              <section class="admin-section">
+                <div class="admin-section-header">
+                  <div>
+                    <h2>Token 总览</h2>
+                    <div class="muted">可切换 1 天、7 天、30 天区间。</div>
+                  </div>
+                  <div class="range-switch">
+                    ${["1d", "7d", "30d"]
                       .map(
-                        (chat) => `
-                          <button class="admin-chat-item ${chat.id === state.adminSelectedChatId ? "active" : ""}" data-admin-chat-id="${chat.id}">
-                            <strong>${escapeHtml(chat.title || "New chat")}</strong>
-                            <div class="muted">${escapeHtml(chat.display_name || "")} · ${escapeHtml(chat.email || "")}</div>
-                            <div class="muted">${formatTime(chat.last_message_at)}</div>
-                          </button>
+                        (range) => `<button class="button button-secondary ${range === state.adminRange ? "is-active" : ""}" data-admin-range="${range}">${range}</button>`,
+                      )
+                      .join("")}
+                  </div>
+                </div>
+                <div class="stats-grid">
+                  <div class="stat-card"><span>总 token</span><strong>${Number(summary.total_tokens).toLocaleString()}</strong></div>
+                  <div class="stat-card"><span>活跃用户</span><strong>${Number(summary.active_users).toLocaleString()}</strong></div>
+                  <div class="stat-card"><span>人均 token</span><strong>${Number(summary.average_tokens).toLocaleString()}</strong></div>
+                </div>
+                <div class="chart-card">${renderLineChart(overview?.timeline || [], state.adminRange)}</div>
+              </section>
+            `
+            : ""
+        }
+        ${
+          section === "invites"
+            ? `
+              <section class="admin-section">
+                <div class="admin-section-header">
+                  <div>
+                    <h2>邀请码</h2>
+                    <div class="muted">新账号必须通过邀请码注册。</div>
+                  </div>
+                </div>
+                <div class="invite-create-row">
+                  <input class="input" id="newInviteCodeInput" type="text" placeholder="例如 maker-2026-001" />
+                  <select class="select" id="newInviteQuotaSelect">
+                    <option value="">basic</option>
+                    <option value="pro">pro</option>
+                    <option value="vip">vip</option>
+                  </select>
+                  <button class="button" id="createInviteBtn">创建邀请码</button>
+                </div>
+                <div class="table-card">
+                  <table class="data-table">
+                    <thead><tr><th>邀请码</th><th>档位</th><th>使用</th><th>状态</th></tr></thead>
+                    <tbody>
+                      ${
+                        state.inviteCodes.length
+                          ? state.inviteCodes
+                              .map(
+                                (item) => `
+                                  <tr>
+                                    <td>${escapeHtml(item.code)}</td>
+                                    <td>${escapeHtml(item.assigned_quota_tier_code || "basic")}</td>
+                                    <td>${item.used_count}/${item.max_uses}</td>
+                                    <td>${escapeHtml(item.status)}</td>
+                                  </tr>
+                                `,
+                              )
+                              .join("")
+                          : `<tr><td colspan="4" class="muted">暂无邀请码。</td></tr>`
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            `
+            : ""
+        }
+        ${
+          section === "users"
+            ? `
+              <section class="admin-section">
+                <div class="admin-section-header">
+                  <div>
+                    <h2>用户用量</h2>
+                    <div class="muted">支持直接切换角色、档位和无限额度。</div>
+                  </div>
+                </div>
+                <div class="table-card">
+                  <table class="data-table">
+                    <thead>
+                      <tr><th>用户</th><th>角色</th><th>档位</th><th>今日</th><th>7天</th><th>30天</th><th>无限</th></tr>
+                    </thead>
+                    <tbody>
+                      ${
+                        state.adminUsers.length
+                          ? state.adminUsers
+                              .map(
+                                (item) => `
+                                  <tr>
+                                    <td>
+                                      <strong>${escapeHtml(item.display_name || "")}</strong>
+                                      <div class="muted">${escapeHtml(item.email || "")}</div>
+                                    </td>
+                                    <td>
+                                      <select class="select admin-user-role" data-user-id="${item.id}">
+                                        ${["user", "admin"]
+                                          .map((role) => `<option value="${role}" ${role === item.role ? "selected" : ""}>${role}</option>`)
+                                          .join("")}
+                                      </select>
+                                    </td>
+                                    <td>
+                                      <select class="select admin-user-tier" data-user-id="${item.id}">
+                                        ${["basic", "pro", "vip"]
+                                          .map((tier) => `<option value="${tier}" ${tier === (item.quota_tier_code || "basic") ? "selected" : ""}>${tier}</option>`)
+                                          .join("")}
+                                      </select>
+                                    </td>
+                                    <td>${Number(item.today_tokens || 0).toLocaleString()}</td>
+                                    <td>${Number(item.last_7d_tokens || 0).toLocaleString()}</td>
+                                    <td>${Number(item.last_30d_tokens || 0).toLocaleString()}</td>
+                                    <td><input type="checkbox" class="admin-user-unlimited" data-user-id="${item.id}" ${item.is_unlimited ? "checked" : ""} /></td>
+                                  </tr>
+                                `,
+                              )
+                              .join("")
+                          : `<tr><td colspan="7" class="muted">暂无用户数据。</td></tr>`
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            `
+            : ""
+        }
+        ${
+          section === "chats"
+            ? `
+              <section class="admin-section">
+                <div class="admin-section-header">
+                  <div>
+                    <h2>聊天记录</h2>
+                    <div class="muted">查看历史会话和消息明细。</div>
+                  </div>
+                </div>
+                <div class="admin-chat-filters">
+                  <select class="select" id="adminChatUserFilter">
+                    <option value="">全部用户</option>
+                    ${state.adminUsers
+                      .map(
+                        (item) => `
+                          <option value="${item.id}" ${String(item.id) === String(state.adminChatUserFilter || "") ? "selected" : ""}>
+                            ${escapeHtml(item.display_name || "用户")}${item.email ? ` · ${escapeHtml(item.email)}` : ""}
+                          </option>
                         `,
                       )
-                      .join("")
-                  : `<div class="muted">当前区间没有聊天记录。</div>`
-              }
-            </div>
-            <div class="table-card admin-chat-detail">
-              ${
-                state.adminChatMessages.length
-                  ? state.adminChatMessages
-                      .map(
-                        (message) => `
-                          <article class="admin-message">
-                            <div class="bubble-header">
-                              <strong>${escapeHtml(message.role)}</strong>
-                              <span>${formatTime(message.created_at)} · ${Number(message.total_tokens || 0).toLocaleString()} tokens</span>
-                            </div>
-                            <div>${renderMarkdownLite(message.content || "")}</div>
-                          </article>
-                        `,
-                      )
-                      .join("")
-                  : `<div class="muted">选择左侧会话后查看消息内容。</div>`
-              }
-            </div>
-          </div>
-        </section>
+                      .join("")}
+                  </select>
+                </div>
+                <div class="admin-chat-grid">
+                  <div class="table-card admin-chat-list">
+                    ${
+                      state.adminChats.length
+                        ? state.adminChats
+                            .map(
+                              (chat) => `
+                                <button class="admin-chat-item ${chat.id === state.adminSelectedChatId ? "active" : ""}" data-admin-chat-id="${chat.id}">
+                                  <strong>${escapeHtml(chat.title || "New chat")}</strong>
+                                  <div class="muted">${escapeHtml(chat.display_name || "")} · ${escapeHtml(chat.email || "")}</div>
+                                  <div class="muted">${formatTime(chat.last_message_at)}</div>
+                                </button>
+                              `,
+                            )
+                            .join("")
+                        : `<div class="muted">当前区间没有聊天记录。</div>`
+                    }
+                  </div>
+                  <div class="table-card admin-chat-detail">
+                    ${
+                      state.adminChatMessages.length
+                        ? state.adminChatMessages
+                            .map(
+                              (message) => `
+                                <article class="admin-message">
+                                  <div class="bubble-header">
+                                    <strong>${escapeHtml(message.role)}</strong>
+                                    <span>${formatTime(message.created_at)} · ${Number(message.total_tokens || 0).toLocaleString()} tokens</span>
+                                  </div>
+                                  <div>${renderMarkdownLite(message.content || "")}</div>
+                                </article>
+                              `,
+                            )
+                            .join("")
+                        : `<div class="muted">选择左侧会话后查看消息内容。</div>`
+                    }
+                  </div>
+                </div>
+              </section>
+            `
+            : ""
+        }
       </div>
     </section>
   `;
@@ -1062,7 +1163,7 @@ function renderApp() {
   });
   document.getElementById("adminNavBtn")?.addEventListener("click", () => {
     state.view = "admin";
-    loadAdminData()
+    loadAdminSection(state.adminSection)
       .then(() => render())
       .catch((error) => setMessage("error", error.message));
   });
@@ -1102,10 +1203,20 @@ function renderApp() {
   document.getElementById("createInviteBtn")?.addEventListener("click", () => {
     createInviteCode().catch((error) => setMessage("error", error.message));
   });
+  document.querySelectorAll("[data-admin-section]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const section = button.getAttribute("data-admin-section");
+      state.adminSelectedChatId = section === "chats" ? state.adminSelectedChatId : null;
+      state.adminChatMessages = section === "chats" ? state.adminChatMessages : [];
+      loadAdminSection(section, { preserveScroll: false })
+        .then(() => render())
+        .catch((error) => setMessage("error", error.message));
+    });
+  });
   document.querySelectorAll("[data-admin-range]").forEach((button) => {
     button.addEventListener("click", () => {
       state.adminRange = button.getAttribute("data-admin-range");
-      loadAdminData()
+      loadAdminSection(state.adminSection)
         .then(() => render())
         .catch((error) => setMessage("error", error.message));
     });
@@ -1131,6 +1242,14 @@ function renderApp() {
     button.addEventListener("click", () => {
       openAdminChat(button.getAttribute("data-admin-chat-id")).catch((error) => setMessage("error", error.message));
     });
+  });
+  document.getElementById("adminChatUserFilter")?.addEventListener("change", (event) => {
+    state.adminChatUserFilter = event.target.value;
+    state.adminSelectedChatId = null;
+    state.adminChatMessages = [];
+    loadAdminSection("chats")
+      .then(() => render())
+      .catch((error) => setMessage("error", error.message));
   });
 }
 
