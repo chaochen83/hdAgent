@@ -11,7 +11,26 @@ router = APIRouter(prefix="/api/user", tags=["user"])
 def profile(request: Request) -> dict:
     # 当前阶段直接复用鉴权解析出来的用户信息。
     user = require_user(request)
-    return {"profile": user}
+    with get_db() as conn:
+        usage = conn.execute(
+            """
+            SELECT COALESCE(SUM(ue.total_tokens), 0)::int AS used_tokens
+            FROM usage_event ue
+            JOIN app_user u ON u.id = ue.user_id
+            WHERE ue.user_id = %s
+              AND (ue.created_at AT TIME ZONE u.timezone)::date = (NOW() AT TIME ZONE u.timezone)::date
+            """,
+            (user["id"],),
+        ).fetchone()
+    profile = dict(user)
+    if profile.get("role") == "admin":
+        profile["is_unlimited"] = True
+    profile["today_used_tokens"] = usage["used_tokens"] if usage else 0
+    profile["remaining_tokens"] = None if profile.get("is_unlimited") else max(
+        0,
+        int((profile.get("daily_token_limit") or 0) - profile["today_used_tokens"]),
+    )
+    return {"profile": profile}
 
 
 @router.get("/usage/daily")

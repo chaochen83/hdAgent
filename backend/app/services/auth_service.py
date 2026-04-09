@@ -1,4 +1,3 @@
-import json
 from typing import Any
 from urllib.parse import urlencode
 
@@ -86,12 +85,15 @@ def _upsert_google_user(profile: dict[str, Any]) -> dict[str, Any]:
     with get_db() as conn:
         existing = conn.execute(
             """
-            SELECT u.id, u.email, u.display_name, u.avatar_url
+            SELECT u.id, u.email, u.display_name, u.avatar_url,
+                   u.role, u.quota_tier_code, u.is_unlimited,
+                   COALESCE(qt.daily_token_limit, %s) AS daily_token_limit
             FROM user_identity i
             JOIN app_user u ON u.id = i.user_id
+            LEFT JOIN quota_tier qt ON qt.code = u.quota_tier_code
             WHERE i.provider = 'google' AND i.provider_subject = %s
             """,
-            (subject,),
+            (settings.default_daily_token_limit, subject),
         ).fetchone()
         if existing:
             # 已绑定过 Google 身份时，只更新展示信息和最近登录时间。
@@ -109,26 +111,7 @@ def _upsert_google_user(profile: dict[str, Any]) -> dict[str, Any]:
             )
             return dict(existing) | {"display_name": name, "avatar_url": avatar_url}
 
-        user = conn.execute(
-            """
-            INSERT INTO app_user (
-              email, display_name, avatar_url, is_email_verified, last_login_at
-            )
-            VALUES (%s, %s, %s, TRUE, NOW())
-            RETURNING id, email, display_name, avatar_url
-            """,
-            (email, name, avatar_url),
-        ).fetchone()
-        conn.execute(
-            """
-            INSERT INTO user_identity (
-              user_id, provider, provider_subject, provider_email, provider_payload
-            )
-            VALUES (%s, 'google', %s, %s, %s::jsonb)
-            """,
-            (user["id"], subject, email, json.dumps(profile, ensure_ascii=False)),
-        )
-        return dict(user)
+        raise HTTPException(status_code=403, detail="Google 首次注册暂未开放，请先使用邀请码完成邮箱注册。")
 
 
 def finish_google_login(*, code: str, state: str, response: Response) -> dict[str, Any]:
@@ -204,14 +187,17 @@ def get_current_user(request: Request) -> dict[str, Any] | None:
     with get_db() as conn:
         row = conn.execute(
             """
-            SELECT u.id, u.email, u.display_name, u.avatar_url, u.timezone, u.locale, u.status
+            SELECT u.id, u.email, u.display_name, u.avatar_url, u.timezone, u.locale, u.status,
+                   u.role, u.quota_tier_code, u.is_unlimited,
+                   COALESCE(qt.daily_token_limit, %s) AS daily_token_limit
             FROM auth_session s
             JOIN app_user u ON u.id = s.user_id
+            LEFT JOIN quota_tier qt ON qt.code = u.quota_tier_code
             WHERE s.session_token_hash = %s
               AND s.revoked_at IS NULL
               AND s.expires_at > NOW()
             """,
-            (token_hash,),
+            (settings.default_daily_token_limit, token_hash),
         ).fetchone()
         if not row:
             return None
@@ -228,6 +214,13 @@ def require_user(request: Request) -> dict[str, Any]:
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+    return user
+
+
+def require_admin(request: Request) -> dict[str, Any]:
+    user = require_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
     return user
 
 
@@ -266,7 +259,61 @@ def request_email_login_code(*, email: str) -> dict[str, Any]:
     return payload
 
 
-def verify_email_login_code(*, email: str, code: str, request: Request, response: Response) -> dict[str, Any]:
+def _load_user_with_quota(conn: Any, *, user_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT u.id, u.email, u.display_name, u.avatar_url, u.timezone, u.locale, u.status,
+               u.role, u.quota_tier_code, u.is_unlimited,
+               COALESCE(qt.daily_token_limit, %s) AS daily_token_limit
+        FROM app_user u
+        LEFT JOIN quota_tier qt ON qt.code = u.quota_tier_code
+        WHERE u.id = %s
+        """,
+        (settings.default_daily_token_limit, user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return dict(row)
+
+
+def _consume_invite_code(conn: Any, *, invite_code: str) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT code, assigned_quota_tier_code, used_count, max_uses, expires_at, status
+        FROM invite_code
+        WHERE code = %s
+        """,
+        (invite_code,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="邀请码无效。")
+    invite = dict(row)
+    if invite["status"] != "active":
+        raise HTTPException(status_code=400, detail="邀请码不可用。")
+    if invite["expires_at"] and invite["expires_at"] <= utcnow():
+        raise HTTPException(status_code=400, detail="邀请码已过期。")
+    if invite["used_count"] >= invite["max_uses"]:
+        raise HTTPException(status_code=400, detail="邀请码已使用完。")
+
+    conn.execute(
+        """
+        UPDATE invite_code
+        SET used_count = used_count + 1
+        WHERE code = %s
+        """,
+        (invite_code,),
+    )
+    return invite
+
+
+def verify_email_login_code(
+    *,
+    email: str,
+    code: str,
+    invite_code: str | None,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
     # 邮箱登录第二步：校验验证码，必要时自动创建用户，再建立登录态。
     code_hash = hash_text(code)
     with get_db() as conn:
@@ -289,19 +336,36 @@ def verify_email_login_code(*, email: str, code: str, request: Request, response
         conn.execute("UPDATE email_login_code SET used_at = NOW() WHERE id = %s", (row["id"],))
 
         user = conn.execute(
-            "SELECT id, email, display_name, avatar_url FROM app_user WHERE email = %s",
-            (email,),
+            """
+            SELECT u.id, u.email, u.display_name, u.avatar_url, u.role, u.quota_tier_code,
+                   u.is_unlimited, COALESCE(qt.daily_token_limit, %s) AS daily_token_limit
+            FROM app_user u
+            LEFT JOIN quota_tier qt ON qt.code = u.quota_tier_code
+            WHERE u.email = %s
+            """,
+            (settings.default_daily_token_limit, email),
         ).fetchone()
         if not user:
             # 邮箱首次登录时，自动完成注册。
+            if not invite_code:
+                raise HTTPException(status_code=400, detail="新用户注册需要邀请码。")
+            invite = _consume_invite_code(conn, invite_code=invite_code.strip())
             fallback_name = email.split("@")[0]
             user = conn.execute(
                 """
-                INSERT INTO app_user (email, display_name, is_email_verified, last_login_at)
-                VALUES (%s, %s, TRUE, NOW())
-                RETURNING id, email, display_name, avatar_url
+                INSERT INTO app_user (
+                  email, display_name, is_email_verified, last_login_at,
+                  role, quota_tier_code, invited_by_code
+                )
+                VALUES (%s, %s, TRUE, NOW(), 'user', %s, %s)
+                RETURNING id
                 """,
-                (email, fallback_name),
+                (
+                    email,
+                    fallback_name,
+                    invite.get("assigned_quota_tier_code") or settings.default_user_quota_tier,
+                    invite["code"],
+                ),
             ).fetchone()
             conn.execute(
                 """
@@ -311,6 +375,7 @@ def verify_email_login_code(*, email: str, code: str, request: Request, response
                 """,
                 (user["id"], email, email),
             )
+            user = _load_user_with_quota(conn, user_id=user["id"])
         else:
             # 老用户二次登录时，只刷新验证状态与最近登录时间。
             conn.execute(
@@ -321,6 +386,7 @@ def verify_email_login_code(*, email: str, code: str, request: Request, response
                 """,
                 (user["id"],),
             )
+            user = _load_user_with_quota(conn, user_id=user["id"])
 
     raw_token = create_app_session(
         user_id=user["id"],

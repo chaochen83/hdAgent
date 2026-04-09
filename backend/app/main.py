@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes_auth import router as auth_router
+from .api.routes_admin import router as admin_router
 from .api.routes_chat import router as chat_router
 from .api.routes_user import router as user_router
 from .core.config import settings
@@ -42,6 +43,7 @@ if os.path.isdir(FRONTEND_DIR):
 
 # 路由按业务模块拆分，便于后续继续扩展知识库模块。
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(chat_router)
 app.include_router(user_router)
 
@@ -53,7 +55,8 @@ def bootstrap() -> dict:
     return {
         "appName": settings.app_name,
         "features": {
-            "knowledgeBase": False,
+            "knowledgeBase": True,
+            "adminPanel": True,
             "phoneLogin": settings.phone_login_enabled,
         },
         "auth": {

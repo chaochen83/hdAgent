@@ -56,6 +56,7 @@ def email_verify_code(payload: EmailCodeVerifyRequest, request: Request, respons
     user = verify_email_login_code(
         email=payload.email,
         code=payload.code,
+        invite_code=payload.invite_code,
         request=request,
         response=response,
     )

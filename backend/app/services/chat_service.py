@@ -8,6 +8,7 @@ from ...llm_providers import build_system_prompt, call_provider
 from ...langgraph_agent import chat_graph
 from ...product_knowledge import PRODUCT_MODEL_LIST, get_product_hint
 from ...schemas import ChatMessage, ChatState, GraphState
+from ..core.config import settings
 from ..core.database import get_db
 
 
@@ -104,6 +105,59 @@ def _truncate_title(text: str) -> str:
     return normalized[:80]
 
 
+def _assert_chat_rate_limit(*, user_id: int) -> None:
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*)::int AS request_count
+            FROM chat_request_log
+            WHERE user_id = %s
+              AND created_at >= NOW() - (%s || ' seconds')::interval
+            """,
+            (user_id, settings.chat_rate_limit_window_seconds),
+        ).fetchone()
+        if row and row["request_count"] >= settings.chat_rate_limit_count:
+            raise HTTPException(status_code=429, detail="发送过于频繁，请稍后再试。")
+        conn.execute(
+            """
+            INSERT INTO chat_request_log (user_id)
+            VALUES (%s)
+            """,
+            (user_id,),
+        )
+
+
+def _assert_daily_quota(*, user_id: int) -> None:
+    with get_db() as conn:
+        user = conn.execute(
+            """
+            SELECT u.role, u.is_unlimited, qt.daily_token_limit
+            FROM app_user u
+            LEFT JOIN quota_tier qt ON qt.code = u.quota_tier_code
+            WHERE u.id = %s
+            """,
+            (user_id,),
+        ).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if user["role"] == "admin" or user["is_unlimited"]:
+            return
+
+        daily_limit = user["daily_token_limit"] or settings.default_daily_token_limit
+        used = conn.execute(
+            """
+            SELECT COALESCE(SUM(ue.total_tokens), 0)::int AS used_tokens
+            FROM usage_event ue
+            JOIN app_user u ON u.id = ue.user_id
+            WHERE ue.user_id = %s
+              AND (ue.created_at AT TIME ZONE u.timezone)::date = (NOW() AT TIME ZONE u.timezone)::date
+            """,
+            (user_id,),
+        ).fetchone()
+        if used and used["used_tokens"] >= daily_limit:
+            raise HTTPException(status_code=403, detail="超出当日额度，请联系管理员升级账号。")
+
+
 async def stream_chat_reply(
     *,
     user_id: int,
@@ -124,6 +178,13 @@ async def stream_chat_reply(
     text = (message or "").strip()
     if not text:
         yield sse_event("error", "消息不能为空。")
+        yield sse_event("end", "[DONE]")
+        return
+    try:
+        _assert_chat_rate_limit(user_id=user_id)
+        _assert_daily_quota(user_id=user_id)
+    except HTTPException as exc:
+        yield sse_event("error", str(exc.detail))
         yield sse_event("end", "[DONE]")
         return
 

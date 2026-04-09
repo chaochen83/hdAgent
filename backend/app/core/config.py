@@ -34,6 +34,10 @@ class Settings:
     phone_login_enabled: bool = os.getenv("PHONE_LOGIN_ENABLED", "false").lower() == "true"
 
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.4")
+    default_user_quota_tier: str = os.getenv("DEFAULT_USER_QUOTA_TIER", "basic")
+    default_daily_token_limit: int = int(os.getenv("DEFAULT_DAILY_TOKEN_LIMIT", "50000"))
+    chat_rate_limit_count: int = int(os.getenv("CHAT_RATE_LIMIT_COUNT", "20"))
+    chat_rate_limit_window_seconds: int = int(os.getenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "60"))
 
     @property
     def google_auth_enabled(self) -> bool:

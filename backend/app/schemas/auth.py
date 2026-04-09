@@ -8,6 +8,7 @@ class EmailCodeRequest(BaseModel):
 class EmailCodeVerifyRequest(BaseModel):
     email: EmailStr
     code: str
+    invite_code: str | None = None
 
 
 class AuthUserResponse(BaseModel):
@@ -15,5 +16,7 @@ class AuthUserResponse(BaseModel):
     email: EmailStr | None = None
     display_name: str
     avatar_url: str | None = None
-    auth_method: str
-
+    role: str
+    quota_tier_code: str | None = None
+    daily_token_limit: int | None = None
+    is_unlimited: bool = False

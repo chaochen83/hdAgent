@@ -14,4 +14,7 @@ class UserProfileResponse(BaseModel):
     timezone: str
     locale: str
     status: str
-
+    role: str
+    quota_tier_code: str | None = None
+    daily_token_limit: int | None = None
+    is_unlimited: bool = False

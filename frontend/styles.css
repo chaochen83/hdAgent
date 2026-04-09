@@ -340,6 +340,12 @@ button {
   letter-spacing: 0.06em;
 }
 
+.sidebar-section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--border-strong) 14%, var(--border-strong) 86%, transparent 100%);
+  margin: 6px 6px 2px;
+}
+
 .nav-list,
 .session-list {
   display: grid;
@@ -351,6 +357,7 @@ button {
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  gap: 6px;
 }
 
 .recent-list-scroll {
@@ -633,6 +640,183 @@ button {
   flex: 1;
 }
 
+.quota-card {
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(16, 163, 127, 0.08);
+  border: 1px solid rgba(16, 163, 127, 0.2);
+}
+
+.admin-layout {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.admin-scroll {
+  height: 100%;
+  overflow: auto;
+  padding: 24px;
+  display: grid;
+  gap: 18px;
+}
+
+.admin-section {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.range-switch,
+.invite-create-row,
+.stats-grid {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.stat-card,
+.chart-card,
+.table-card {
+  border-radius: 24px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 18px;
+}
+
+.stat-card span {
+  color: var(--text-soft);
+  display: block;
+  margin-bottom: 10px;
+}
+
+.stat-card strong {
+  font-size: 28px;
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+}
+
+.chart-svg line,
+.chart-svg path {
+  stroke: rgba(255, 255, 255, 0.3);
+  fill: none;
+}
+
+.chart-svg .chart-grid {
+  stroke: rgba(255, 255, 255, 0.12);
+}
+
+.chart-svg path {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.chart-svg circle {
+  fill: #fff;
+}
+
+.chart-svg text {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.chart-axis-title {
+  fill: var(--text-soft);
+  font-size: 12px;
+}
+
+.chart-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.chart-y-label {
+  font-size: 11px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  padding: 12px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.data-table th {
+  color: var(--text-soft);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.admin-chat-grid {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 16px;
+}
+
+.admin-chat-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.admin-chat-item {
+  width: 100%;
+  text-align: left;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+}
+
+.admin-chat-item.active,
+.admin-chat-item:hover,
+.button.is-active {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.range-switch .button.is-active {
+  background: var(--accent);
+  border-color: rgba(16, 163, 127, 0.9);
+  color: white;
+  box-shadow: 0 0 0 1px rgba(16, 163, 127, 0.25), 0 10px 24px rgba(16, 163, 127, 0.18);
+}
+
+.admin-chat-detail {
+  min-height: 240px;
+  display: grid;
+  gap: 12px;
+}
+
+.admin-message {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  padding: 14px;
+}
+
 @media (max-width: 960px) {
   .login-shell,
   .app-shell {
@@ -656,6 +840,11 @@ button {
   .topbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .stats-grid,
+  .admin-chat-grid {
+    grid-template-columns: 1fr;
   }
 
   .topbar-controls {

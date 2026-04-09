@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS app_user (
   locale VARCHAR(32) NOT NULL DEFAULT 'zh-CN',
   timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
   status VARCHAR(32) NOT NULL DEFAULT 'active',
+  role VARCHAR(16) NOT NULL DEFAULT 'user',
+  quota_tier_code VARCHAR(32),
+  invited_by_code VARCHAR(64),
+  notes TEXT,
+  is_unlimited BOOLEAN NOT NULL DEFAULT FALSE,
   is_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
   last_login_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -112,6 +117,42 @@ CREATE TABLE IF NOT EXISTS auth_session (
 
 CREATE INDEX IF NOT EXISTS idx_auth_session_user_id ON auth_session(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_session_expires_at ON auth_session(expires_at);
+
+CREATE TABLE IF NOT EXISTS quota_tier (
+  code VARCHAR(32) PRIMARY KEY,
+  name VARCHAR(64) NOT NULL,
+  daily_token_limit INTEGER,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS invite_code (
+  code VARCHAR(64) PRIMARY KEY,
+  created_by_user_id BIGINT REFERENCES app_user(id) ON DELETE SET NULL,
+  assigned_quota_tier_code VARCHAR(32) REFERENCES quota_tier(code) ON DELETE SET NULL,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  expires_at TIMESTAMPTZ,
+  status VARCHAR(16) NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invite_code_status_created_at
+  ON invite_code(status, created_at DESC);
+
+ALTER TABLE app_user
+  ADD CONSTRAINT fk_app_user_quota_tier
+  FOREIGN KEY (quota_tier_code) REFERENCES quota_tier(code) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS chat_request_log (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_request_log_user_id_created_at
+  ON chat_request_log(user_id, created_at DESC);
 
 -- -------------------------
 -- 6) Chat
@@ -162,6 +203,13 @@ CREATE TABLE IF NOT EXISTS usage_event (
 
 CREATE INDEX IF NOT EXISTS idx_usage_event_user_id_created_at
   ON usage_event(user_id, created_at DESC);
+
+INSERT INTO quota_tier (code, name, daily_token_limit, sort_order)
+VALUES
+  ('basic', 'Basic', 50000, 10),
+  ('pro', 'Pro', 150000, 20),
+  ('vip', 'VIP', 500000, 30)
+ON CONFLICT (code) DO NOTHING;
 
 -- -------------------------
 -- 7) Knowledge base
@@ -285,6 +333,9 @@ ALTER TABLE app_user OWNER TO hdagent_app;
 ALTER TABLE user_identity OWNER TO hdagent_app;
 ALTER TABLE email_login_code OWNER TO hdagent_app;
 ALTER TABLE auth_session OWNER TO hdagent_app;
+ALTER TABLE quota_tier OWNER TO hdagent_app;
+ALTER TABLE invite_code OWNER TO hdagent_app;
+ALTER TABLE chat_request_log OWNER TO hdagent_app;
 ALTER TABLE chat_session OWNER TO hdagent_app;
 ALTER TABLE chat_message OWNER TO hdagent_app;
 ALTER TABLE usage_event OWNER TO hdagent_app;
@@ -297,6 +348,7 @@ ALTER SEQUENCE app_user_id_seq OWNER TO hdagent_app;
 ALTER SEQUENCE user_identity_id_seq OWNER TO hdagent_app;
 ALTER SEQUENCE email_login_code_id_seq OWNER TO hdagent_app;
 ALTER SEQUENCE auth_session_id_seq OWNER TO hdagent_app;
+ALTER SEQUENCE chat_request_log_id_seq OWNER TO hdagent_app;
 ALTER SEQUENCE chat_message_id_seq OWNER TO hdagent_app;
 ALTER SEQUENCE usage_event_id_seq OWNER TO hdagent_app;
 ALTER SEQUENCE knowledge_chunk_id_seq OWNER TO hdagent_app;
