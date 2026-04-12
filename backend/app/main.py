@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from .api.routes_auth import router as auth_router
 from .api.routes_admin import router as admin_router
 from .api.routes_chat import router as chat_router
+from .api.routes_knowledge import router as knowledge_router
+from .api.routes_knowledge_public import router as knowledge_public_router
 from .api.routes_user import router as user_router
 from .core.config import settings
 
@@ -45,6 +47,8 @@ if os.path.isdir(FRONTEND_DIR):
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(chat_router)
+app.include_router(knowledge_router)
+app.include_router(knowledge_public_router)
 app.include_router(user_router)
 
 
@@ -58,6 +62,7 @@ def bootstrap() -> dict:
             "knowledgeBase": True,
             "adminPanel": True,
             "phoneLogin": settings.phone_login_enabled,
+            "mcpGithub": settings.mcp_github_enabled,
         },
         "auth": {
             "googleEnabled": settings.google_auth_enabled,
@@ -68,9 +73,10 @@ def bootstrap() -> dict:
 @app.get("/product-model-list")
 def product_model_list() -> dict:
     from ..product_knowledge import PRODUCT_MODEL_LIST
+    from .services.knowledge_service import list_active_board_names
 
     # 当前支持的产品型号列表，前端用它来渲染下拉框。
-    return {"product_model_list": PRODUCT_MODEL_LIST}
+    return {"product_model_list": list_active_board_names() or PRODUCT_MODEL_LIST}
 
 
 @app.get("/health")

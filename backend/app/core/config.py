@@ -38,6 +38,18 @@ class Settings:
     default_daily_token_limit: int = int(os.getenv("DEFAULT_DAILY_TOKEN_LIMIT", "50000"))
     chat_rate_limit_count: int = int(os.getenv("CHAT_RATE_LIMIT_COUNT", "20"))
     chat_rate_limit_window_seconds: int = int(os.getenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "60"))
+    knowledge_storage_dir: str = os.getenv(
+        "KNOWLEDGE_STORAGE_DIR",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "data", "knowledge"),
+    )
+    knowledge_chunk_size: int = int(os.getenv("KNOWLEDGE_CHUNK_SIZE", "1200"))
+    knowledge_chunk_overlap: int = int(os.getenv("KNOWLEDGE_CHUNK_OVERLAP", "180"))
+    knowledge_top_k: int = int(os.getenv("KNOWLEDGE_TOP_K", "5"))
+    embedding_base_url: str = os.getenv("EMBEDDING_BASE_URL", os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_timeout_seconds: float = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30"))
+    mcp_github_enabled: bool = os.getenv("MCP_GITHUB_ENABLED", "false").lower() == "true"
 
     @property
     def google_auth_enabled(self) -> bool:

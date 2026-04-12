@@ -32,15 +32,40 @@ const state = {
   inviteCodes: [],
   adminScrollTop: 0,
   adminForceScrollTop: false,
+  knowledgeSection: "ingest",
+  boardItems: [],
+  knowledgeDocuments: [],
+  selectedBoardId: "",
+  knowledgeFilterType: "",
+  knowledgeFilterStatus: "",
+  boardForm: {
+    id: "",
+    code: "",
+    name: "",
+    description: "",
+    defaultHint: "",
+    aliases: "",
+    isEnabled: true,
+  },
+  knowledgeInputType: "file",
+  retrievalQuery: "",
+  retrievalResults: [],
+  activeKnowledgeDetail: null,
+  activeKnowledgeJobs: [],
+  activeKnowledgeChunks: [],
+  boardCreateOpen: false,
+  inviteCreateOpen: false,
 };
 
 let messageTimer = null;
+let knowledgePollTimer = null;
 
 async function apiFetch(url, options = {}) {
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(url, {
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(options.headers || {}),
     },
     ...options,
@@ -304,6 +329,225 @@ async function loadUsage() {
 async function loadAdminData() {
   if (state.user?.role !== "admin") return;
   return loadAdminSection(state.adminSection);
+}
+
+async function loadKnowledgeData() {
+  if (state.user?.role !== "admin") return;
+  const query = new URLSearchParams();
+  if (state.selectedBoardId) query.set("board_type_id", state.selectedBoardId);
+  if (state.knowledgeFilterType) query.set("knowledge_type", state.knowledgeFilterType);
+  if (state.knowledgeFilterStatus) query.set("parse_status", state.knowledgeFilterStatus);
+  const [boardsPayload, docsPayload] = await Promise.all([
+    apiFetch("/api/admin/boards"),
+    apiFetch(`/api/admin/knowledge/documents${query.toString() ? `?${query.toString()}` : ""}`),
+  ]);
+  state.boardItems = boardsPayload.items || [];
+  state.knowledgeDocuments = docsPayload.items || [];
+  if (!state.selectedBoardId && state.boardItems.length) {
+    state.selectedBoardId = String(state.boardItems[0].id);
+  }
+  if (!state.boardForm.id && !state.boardForm.name && state.boardItems.length) {
+    resetBoardForm();
+  }
+  scheduleKnowledgePolling();
+}
+
+function scheduleKnowledgePolling() {
+  if (knowledgePollTimer) {
+    clearTimeout(knowledgePollTimer);
+    knowledgePollTimer = null;
+  }
+  const isKnowledgeSurface = state.view === "knowledge";
+  const hasActiveJobs = (state.knowledgeDocuments || []).some((item) =>
+    ["uploaded", "queued", "parsing", "chunking", "embedding"].includes(item.parse_status),
+  );
+  if (!isKnowledgeSurface || !hasActiveJobs) return;
+  knowledgePollTimer = window.setTimeout(() => {
+    loadKnowledgeData()
+      .then(() => render())
+      .catch(() => {})
+      .finally(() => {
+        knowledgePollTimer = null;
+      });
+  }, 2000);
+}
+
+function resetBoardForm(board = null) {
+  state.boardForm = {
+    id: board ? String(board.id) : "",
+    code: board?.code || "",
+    name: board?.name || "",
+    description: board?.description || "",
+    defaultHint: board?.default_hint || "",
+    aliases: board?.aliases?.join(", ") || "",
+    isEnabled: board ? Boolean(board.is_enabled) : true,
+  };
+}
+
+async function createBoard() {
+  const payload = {
+    code: document.getElementById("boardCodeInput")?.value?.trim(),
+    name: document.getElementById("boardNameInput")?.value?.trim(),
+    description: document.getElementById("boardDescriptionInput")?.value?.trim() || null,
+    default_hint: document.getElementById("boardHintInput")?.value?.trim() || null,
+    aliases: (document.getElementById("boardAliasesInput")?.value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    is_enabled: Boolean(document.getElementById("boardEnabledInput")?.checked),
+  };
+  if (!payload.code || !payload.name) {
+    setMessage("error", "请先填写板型编码和名称。");
+    return;
+  }
+  await apiFetch("/api/admin/boards", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  resetBoardForm();
+  await loadKnowledgeData();
+  state.productModels = state.boardItems.map((item) => item.name);
+  setMessage("success", "板型已创建。");
+}
+
+async function updateBoard() {
+  const boardId = state.boardForm.id;
+  if (!boardId) {
+    setMessage("error", "请先选择要编辑的板型。");
+    return;
+  }
+  const payload = {
+    code: document.getElementById("boardCodeInput")?.value?.trim(),
+    name: document.getElementById("boardNameInput")?.value?.trim(),
+    description: document.getElementById("boardDescriptionInput")?.value?.trim() || null,
+    default_hint: document.getElementById("boardHintInput")?.value?.trim() || null,
+    aliases: (document.getElementById("boardAliasesInput")?.value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    is_enabled: Boolean(document.getElementById("boardEnabledInput")?.checked),
+  };
+  await apiFetch(`/api/admin/boards/${boardId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  await loadKnowledgeData();
+  state.productModels = state.boardItems.map((item) => item.name);
+  setMessage("success", "板型已更新。");
+}
+
+async function deleteBoard(boardId) {
+  await apiFetch(`/api/admin/boards/${boardId}`, { method: "DELETE" });
+  if (String(boardId) === String(state.selectedBoardId)) {
+    state.selectedBoardId = "";
+  }
+  resetBoardForm();
+  await loadKnowledgeData();
+  state.productModels = state.boardItems.filter((item) => !item.deleted_at).map((item) => item.name);
+  setMessage("success", "板型已软删除。");
+}
+
+async function createKnowledgeFromText() {
+  const boardTypeId = Number(document.getElementById("knowledgeBoardSelect")?.value || state.selectedBoardId || 0);
+  const title = document.getElementById("knowledgeTextTitleInput")?.value?.trim();
+  const text = document.getElementById("knowledgeTextContentInput")?.value?.trim();
+  if (!boardTypeId || !title || !text) {
+    setMessage("error", "请先选择板型，并填写知识标题和正文。");
+    return;
+  }
+  await apiFetch("/api/admin/knowledge/documents/text", {
+    method: "POST",
+    body: JSON.stringify({ board_type_id: boardTypeId, title, text }),
+  });
+  await loadKnowledgeData();
+  setMessage("success", "文本知识已入库。");
+}
+
+async function createKnowledgeFromWebsite() {
+  const boardTypeId = Number(document.getElementById("knowledgeBoardSelect")?.value || state.selectedBoardId || 0);
+  const title = document.getElementById("knowledgeWebsiteTitleInput")?.value?.trim();
+  const sourceUrl = document.getElementById("knowledgeWebsiteUrlInput")?.value?.trim();
+  const content = document.getElementById("knowledgeWebsiteContentInput")?.value?.trim();
+  if (!boardTypeId || !title || !sourceUrl || !content) {
+    setMessage("error", "请填写网站知识的标题、链接和正文内容。");
+    return;
+  }
+  await apiFetch("/api/admin/knowledge/documents/website", {
+    method: "POST",
+    body: JSON.stringify({ board_type_id: boardTypeId, title, source_url: sourceUrl, content }),
+  });
+  await loadKnowledgeData();
+  setMessage("success", "网站知识已入库。");
+}
+
+async function createKnowledgeFromFile() {
+  const boardTypeId = Number(document.getElementById("knowledgeBoardSelect")?.value || state.selectedBoardId || 0);
+  const fileInput = document.getElementById("knowledgeFileInput");
+  const file = fileInput?.files?.[0];
+  if (!boardTypeId || !file) {
+    setMessage("error", "请先选择板型并上传 txt 或 xlsx 文件。");
+    return;
+  }
+  const formData = new FormData();
+  formData.set("board_type_id", String(boardTypeId));
+  formData.set("file", file);
+  await apiFetch("/api/admin/knowledge/documents/file", {
+    method: "POST",
+    body: formData,
+  });
+  if (fileInput) fileInput.value = "";
+  await loadKnowledgeData();
+  setMessage("success", "文件知识已上传并入库。");
+}
+
+async function deleteKnowledgeDocument(documentId) {
+  await apiFetch(`/api/admin/knowledge/documents/${documentId}`, { method: "DELETE" });
+  await loadKnowledgeData();
+  setMessage("success", "知识条目已删除。");
+}
+
+async function runKnowledgeRetrieve() {
+  const boardTypeId = Number(document.getElementById("knowledgeRetrieveBoardSelect")?.value || state.selectedBoardId || 0);
+  const query = document.getElementById("knowledgeRetrieveQueryInput")?.value?.trim();
+  if (!boardTypeId || !query) {
+    setMessage("error", "请输入检索问题并选择板型。");
+    return;
+  }
+  const payload = await apiFetch("/api/admin/knowledge/retrieve", {
+    method: "POST",
+    body: JSON.stringify({ board_type_id: boardTypeId, query, top_k: 5 }),
+  });
+  state.retrievalQuery = query;
+  state.retrievalResults = payload.items || [];
+  render();
+}
+
+async function openKnowledgeDetail(documentId) {
+  const [payload, jobsPayload, chunksPayload] = await Promise.all([
+    apiFetch(`/api/admin/knowledge/documents/${documentId}`),
+    apiFetch(`/api/admin/knowledge/documents/${documentId}/jobs`),
+    apiFetch(`/api/admin/knowledge/documents/${documentId}/chunks?limit=20`),
+  ]);
+  state.activeKnowledgeDetail = payload.document || null;
+  state.activeKnowledgeJobs = jobsPayload.items || [];
+  state.activeKnowledgeChunks = chunksPayload.items || [];
+  render();
+}
+
+function closeKnowledgeDetail() {
+  state.activeKnowledgeDetail = null;
+  state.activeKnowledgeJobs = [];
+  state.activeKnowledgeChunks = [];
+  render();
+}
+
+async function retryKnowledgeDocument(documentId) {
+  await apiFetch(`/api/admin/knowledge/documents/${documentId}/retry`, {
+    method: "POST",
+  });
+  await loadKnowledgeData();
+  await openKnowledgeDetail(documentId);
+  setMessage("success", "已重新加入解析队列。");
 }
 
 async function loadAdminSection(section, options = {}) {
@@ -783,14 +1027,28 @@ function renderAdmin() {
                     <div class="muted">新账号必须通过邀请码注册。</div>
                   </div>
                 </div>
-                <div class="invite-create-row">
-                  <input class="input" id="newInviteCodeInput" type="text" placeholder="例如 maker-2026-001" />
-                  <select class="select" id="newInviteQuotaSelect">
-                    <option value="">basic</option>
-                    <option value="pro">pro</option>
-                    <option value="vip">vip</option>
-                  </select>
-                  <button class="button" id="createInviteBtn">创建邀请码</button>
+                <div class="collapsible-card">
+                  <button class="collapsible-trigger ${state.inviteCreateOpen ? "is-open" : ""}" id="inviteCreateToggleBtn">
+                    <span>创建邀请码</span>
+                    <span>${state.inviteCreateOpen ? "收起" : "展开"}</span>
+                  </button>
+                  ${
+                    state.inviteCreateOpen
+                      ? `
+                        <div class="collapsible-body">
+                          <div class="invite-create-row">
+                            <input class="input" id="newInviteCodeInput" type="text" placeholder="例如 maker-2026-001" />
+                            <select class="select" id="newInviteQuotaSelect">
+                              <option value="">basic</option>
+                              <option value="pro">pro</option>
+                              <option value="vip">vip</option>
+                            </select>
+                            <button class="button" id="createInviteBtn">创建邀请码</button>
+                          </div>
+                        </div>
+                      `
+                      : ""
+                  }
                 </div>
                 <div class="table-card">
                   <table class="data-table">
@@ -947,9 +1205,487 @@ function renderAdmin() {
   `;
 }
 
+function renderKnowledgeStatus(status) {
+  const map = {
+    uploaded: "上传中",
+    queued: "排队中",
+    parsing: "解析中",
+    chunking: "解析中",
+    embedding: "解析中",
+    completed: "已完成",
+    failed: "失败",
+  };
+  const key = status || "queued";
+  return `<span class="status-pill status-${escapeHtml(key)}">${escapeHtml(map[key] || key)}</span>`;
+}
+
+function renderBoardManagement() {
+  return `
+    <section class="admin-section">
+      <div class="collapsible-card">
+        <button class="collapsible-trigger ${state.boardCreateOpen ? "is-open" : ""}" id="boardCreateToggleBtn">
+          <span>${state.boardForm.id ? "编辑板型" : "新增板型"}</span>
+          <span>${state.boardCreateOpen ? "收起" : "展开"}</span>
+        </button>
+        ${
+          state.boardCreateOpen || state.boardForm.id
+            ? `
+              <div class="collapsible-body">
+                <div class="admin-section-header">
+                  <div>
+                    <div class="muted">建议编码使用小写加下划线，例如 <code>esp32_s3_wroom_1</code>。</div>
+                  </div>
+                  ${state.boardForm.id ? `<button class="button button-secondary" id="boardResetBtn">取消编辑</button>` : ""}
+                </div>
+                <div class="stack">
+                  <div class="field">
+                    <label for="boardCodeInput">板型编码</label>
+                    <input class="input" id="boardCodeInput" value="${escapeHtml(state.boardForm.code)}" placeholder="matouch_esp32s3" />
+                  </div>
+                  <div class="field">
+                    <label for="boardNameInput">板型名称</label>
+                    <input class="input" id="boardNameInput" value="${escapeHtml(state.boardForm.name)}" placeholder="MaTouch_ESP32S3" />
+                  </div>
+                  <div class="field">
+                    <label for="boardAliasesInput">别名列表</label>
+                    <input class="input" id="boardAliasesInput" value="${escapeHtml(state.boardForm.aliases)}" placeholder="matouch, esp32 s3, wroom-1" />
+                  </div>
+                  <div class="field">
+                    <label for="boardDescriptionInput">描述</label>
+                    <textarea class="composer-input form-textarea" id="boardDescriptionInput" placeholder="板型说明">${escapeHtml(state.boardForm.description)}</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="boardHintInput">默认提示语</label>
+                    <textarea class="composer-input form-textarea" id="boardHintInput" placeholder="聊天里给用户的引导提示">${escapeHtml(state.boardForm.defaultHint)}</textarea>
+                  </div>
+                  <label class="checkbox-row">
+                    <input type="checkbox" id="boardEnabledInput" ${state.boardForm.isEnabled ? "checked" : ""} />
+                    <span>启用该板型</span>
+                  </label>
+                  <div class="inline-actions">
+                    <button class="button" id="boardSaveBtn">${state.boardForm.id ? "保存修改" : "创建板型"}</button>
+                  </div>
+                </div>
+              </div>
+            `
+            : ""
+        }
+      </div>
+      <div class="table-card">
+        <div class="admin-section-header">
+          <div>
+            <h2>板型列表</h2>
+            <div class="muted">所有知识条目都挂在板型下，删除采用软删除。</div>
+          </div>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>板型名称</th><th>编码</th><th>别名</th><th>知识数</th><th>状态</th><th>更新时间</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            ${
+              state.boardItems.length
+                ? state.boardItems
+                    .map(
+                      (item) => `
+                        <tr>
+                          <td>
+                            <strong>${escapeHtml(item.name)}</strong>
+                            <div class="muted">${escapeHtml(item.description || "")}</div>
+                          </td>
+                          <td>${escapeHtml(item.code)}</td>
+                          <td>${escapeHtml((item.aliases || []).join(", ") || "-")}</td>
+                          <td>${Number(item.knowledge_count || 0).toLocaleString()}</td>
+                          <td>${item.deleted_at ? '<span class="status-pill status-failed">已删除</span>' : item.is_enabled ? '<span class="status-pill status-completed">启用</span>' : '<span class="status-pill status-queued">停用</span>'}</td>
+                          <td>${formatTime(item.updated_at)}</td>
+                          <td>
+                            <div class="inline-actions">
+                              <button class="button button-secondary" data-board-edit="${item.id}">编辑</button>
+                              ${item.deleted_at ? "" : `<button class="button button-secondary" data-board-delete="${item.id}">删除</button>`}
+                            </div>
+                          </td>
+                        </tr>
+                      `,
+                    )
+                    .join("")
+                : `<tr><td colspan="7" class="muted">暂无板型数据，请先执行知识库迁移 SQL。</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderKnowledgeInput() {
+  const activeBoardId = state.selectedBoardId || (state.boardItems[0] ? String(state.boardItems[0].id) : "");
+  const boardOptions = state.boardItems
+    .filter((item) => !item.deleted_at)
+    .map(
+      (item) => `<option value="${item.id}" ${String(item.id) === String(activeBoardId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`,
+    )
+    .join("");
+
+  return `
+    <section class="admin-section">
+      <div class="table-card">
+        <div class="admin-section-header">
+          <div>
+            <h2>知识录入</h2>
+            <div class="muted">先选择板型，再录入 txt、excel、网站正文或直接输入文本。</div>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="field">
+            <label for="knowledgeBoardSelect">所属板型</label>
+            <select class="select" id="knowledgeBoardSelect">
+              <option value="">请选择板型</option>
+              ${boardOptions}
+            </select>
+          </div>
+          <div class="admin-subnav">
+            ${[
+              { key: "file", label: "上传文件" },
+              { key: "text", label: "直接输入" },
+              { key: "website", label: "网站内容" },
+            ]
+              .map(
+                (item) => `
+                  <button class="admin-subnav-item ${state.knowledgeInputType === item.key ? "active" : ""}" data-knowledge-input-type="${item.key}">
+                    ${item.label}
+                  </button>
+                `,
+              )
+              .join("")}
+          </div>
+          ${
+            state.knowledgeInputType === "file"
+              ? `
+                <div class="field">
+                  <label for="knowledgeFileInput">上传 txt / xlsx</label>
+                  <input class="input" id="knowledgeFileInput" type="file" accept=".txt,.xlsx,.xlsm,.xltx,.xltm" />
+                </div>
+                <button class="button" id="knowledgeFileSubmitBtn">上传并入库</button>
+              `
+              : ""
+          }
+          ${
+            state.knowledgeInputType === "text"
+              ? `
+                <div class="field">
+                  <label for="knowledgeTextTitleInput">知识名称</label>
+                  <input class="input" id="knowledgeTextTitleInput" type="text" placeholder="例如：ESP32-S3 I2C 接线说明" />
+                </div>
+                <div class="field">
+                  <label for="knowledgeTextContentInput">正文</label>
+                  <textarea class="composer-input form-textarea form-textarea-lg" id="knowledgeTextContentInput" placeholder="直接粘贴知识内容"></textarea>
+                </div>
+                <button class="button" id="knowledgeTextSubmitBtn">保存文本知识</button>
+              `
+              : ""
+          }
+          ${
+            state.knowledgeInputType === "website"
+              ? `
+                <div class="field">
+                  <label for="knowledgeWebsiteTitleInput">知识名称</label>
+                  <input class="input" id="knowledgeWebsiteTitleInput" type="text" placeholder="例如：官方文档摘录" />
+                </div>
+                <div class="field">
+                  <label for="knowledgeWebsiteUrlInput">网站链接</label>
+                  <input class="input" id="knowledgeWebsiteUrlInput" type="url" placeholder="https://example.com/docs/esp32" />
+                </div>
+                <div class="field">
+                  <label for="knowledgeWebsiteContentInput">正文内容</label>
+                  <textarea class="composer-input form-textarea form-textarea-lg" id="knowledgeWebsiteContentInput" placeholder="当前阶段先手工粘贴已清洗的网站正文"></textarea>
+                </div>
+                <button class="button" id="knowledgeWebsiteSubmitBtn">保存网站知识</button>
+              `
+              : ""
+          }
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderKnowledgeManage() {
+  return `
+    <section class="admin-section">
+      <div class="table-card">
+        <div class="admin-section-header">
+          <div>
+            <h2>知识库管理</h2>
+            <div class="muted">当前展示所选板型下的知识条目。Excel/TXT 支持下载源文件。</div>
+          </div>
+          <div class="knowledge-filter-row">
+            <div class="knowledge-filters knowledge-filters-compact">
+              <select class="select" id="knowledgeFilterBoardSelect">
+                <option value="">全部板型</option>
+                ${state.boardItems.map((item) => `<option value="${item.id}" ${String(item.id) === String(state.selectedBoardId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+              </select>
+              <select class="select" id="knowledgeFilterTypeSelect">
+                <option value="">全部类型</option>
+                ${["txt", "excel", "website", "text"].map((item) => `<option value="${item}" ${item === state.knowledgeFilterType ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+              </select>
+              <select class="select" id="knowledgeFilterStatusSelect">
+                <option value="">全部状态</option>
+                ${["uploaded", "queued", "parsing", "chunking", "embedding", "completed", "failed"].map((item) => `<option value="${item}" ${item === state.knowledgeFilterStatus ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>知识名称</th><th>知识类型</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            ${
+              state.knowledgeDocuments.length
+                ? state.knowledgeDocuments
+                    .map(
+                      (item) => `
+                        <tr>
+                          <td>
+                            <strong>${escapeHtml(item.title || item.source_name || "Untitled")}</strong>
+                            <div class="muted">${escapeHtml(item.board_name || "")}</div>
+                          </td>
+                          <td>${escapeHtml(item.knowledge_type || item.source_type || "-")}</td>
+                          <td>${renderKnowledgeStatus(item.parse_status)}</td>
+                          <td>${formatTime(item.created_at)}</td>
+                          <td>${formatTime(item.updated_at)}</td>
+                          <td>
+                            <div class="inline-actions">
+                              ${["txt", "excel"].includes(item.knowledge_type) ? `<a class="button button-secondary inline-link-button" href="/api/admin/knowledge/documents/${item.id}/download">下载源文件</a>` : ""}
+                              <button class="button button-secondary" data-knowledge-detail="${item.id}">详情</button>
+                              <button class="button button-secondary" data-knowledge-delete="${item.id}">删除</button>
+                            </div>
+                          </td>
+                        </tr>
+                      `,
+                    )
+                    .join("")
+                : `<tr><td colspan="6" class="muted">当前筛选下还没有知识条目。</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderKnowledgeDetailModal() {
+  if (!state.activeKnowledgeDetail) return "";
+  return `
+    <div class="modal-backdrop" id="knowledgeDetailBackdrop">
+      <div class="modal-panel modal-panel-lg" role="dialog" aria-modal="true" aria-label="知识详情">
+        <div class="admin-section-header">
+          <div>
+            <h2>知识详情</h2>
+            <div class="muted">${escapeHtml(state.activeKnowledgeDetail.title || "Untitled")}</div>
+          </div>
+          <div class="inline-actions">
+            <a class="button button-secondary inline-link-button" href="/knowledge/chunks/${state.activeKnowledgeChunks[0]?.id || ""}" target="_blank" rel="noreferrer">新开页查看</a>
+            <button class="button button-secondary" id="knowledgeDetailCloseBtn">关闭</button>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="detail-grid">
+            <div><span class="muted">板型</span><strong>${escapeHtml(state.activeKnowledgeDetail.board_name || "-")}</strong></div>
+            <div><span class="muted">类型</span><strong>${escapeHtml(state.activeKnowledgeDetail.knowledge_type || "-")}</strong></div>
+            <div><span class="muted">状态</span><strong>${renderKnowledgeStatus(state.activeKnowledgeDetail.parse_status)}</strong></div>
+            <div><span class="muted">Chunk 数</span><strong>${Number(state.activeKnowledgeDetail.chunk_count || 0).toLocaleString()}</strong></div>
+            <div><span class="muted">Token 估算</span><strong>${Number(state.activeKnowledgeDetail.token_count || 0).toLocaleString()}</strong></div>
+            <div><span class="muted">文件名</span><strong>${escapeHtml(state.activeKnowledgeDetail.file_name || "-")}</strong></div>
+          </div>
+          <div class="field">
+            <label>来源</label>
+            <div class="detail-box">${escapeHtml(state.activeKnowledgeDetail.source_name || "-")}</div>
+          </div>
+          ${
+            state.activeKnowledgeDetail.source_url
+              ? `
+                <div class="field">
+                  <label>链接</label>
+                  <a class="detail-box detail-link" href="${escapeHtml(state.activeKnowledgeDetail.source_url)}" target="_blank" rel="noreferrer">
+                    ${escapeHtml(state.activeKnowledgeDetail.source_url)}
+                  </a>
+                </div>
+              `
+              : ""
+          }
+          ${
+            state.activeKnowledgeDetail.parse_error
+              ? `
+                <div class="field">
+                  <label>解析提示</label>
+                  <div class="detail-box detail-error">${escapeHtml(state.activeKnowledgeDetail.parse_error)}</div>
+                </div>
+              `
+              : ""
+          }
+          <div class="field">
+            <label>元数据</label>
+            <pre class="detail-box detail-pre">${escapeHtml(JSON.stringify(state.activeKnowledgeDetail.metadata || {}, null, 2))}</pre>
+          </div>
+          <div class="field">
+            <label>正文预览</label>
+            <div class="detail-box detail-preview">${renderMarkdownLite((state.activeKnowledgeDetail.raw_text || "").slice(0, 2400) || "暂无正文预览")}</div>
+          </div>
+          ${
+            state.activeKnowledgeDetail.parse_status === "failed"
+              ? `<button class="button" id="knowledgeRetryBtn" data-knowledge-retry="${state.activeKnowledgeDetail.id}">重试解析</button>`
+              : ""
+          }
+          <div class="field">
+            <label>Chunk 预览</label>
+            <div class="chunk-list">
+              ${
+                state.activeKnowledgeChunks.length
+                  ? state.activeKnowledgeChunks
+                      .map(
+                        (chunk) => `
+                          <article class="job-card">
+                            <div class="bubble-header">
+                              <strong>Chunk #${Number(chunk.chunk_index || 0) + 1}</strong>
+                              <span>${Number(chunk.token_count || 0).toLocaleString()} tokens</span>
+                            </div>
+                            <div class="detail-box detail-preview">${renderMarkdownLite((chunk.content || "").slice(0, 600))}</div>
+                          </article>
+                        `,
+                      )
+                      .join("")
+                  : `<div class="muted">当前还没有 chunk 预览。</div>`
+              }
+            </div>
+          </div>
+          <div class="field">
+            <label>任务历史</label>
+            <div class="job-list">
+              ${
+                state.activeKnowledgeJobs.length
+                  ? state.activeKnowledgeJobs
+                      .map(
+                        (job) => `
+                          <article class="job-card">
+                            <div class="bubble-header">
+                              <strong>${escapeHtml(job.job_type || "ingest")}</strong>
+                              <span>${renderKnowledgeStatus(job.status === "succeeded" ? "completed" : job.status === "running" ? "parsing" : job.status || "queued")}</span>
+                            </div>
+                            <div class="muted">尝试次数：${Number(job.attempt_count || 0)} · 创建时间：${formatTime(job.created_at)}</div>
+                            ${job.error_message ? `<div class="detail-box detail-error">${escapeHtml(job.error_message)}</div>` : ""}
+                          </article>
+                        `,
+                      )
+                      .join("")
+                  : `<div class="muted">当前还没有任务历史。</div>`
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderKnowledgeRetrieve() {
+  const activeBoardId = state.selectedBoardId || (state.boardItems[0] ? String(state.boardItems[0].id) : "");
+  const boardOptions = state.boardItems
+    .filter((item) => !item.deleted_at)
+    .map(
+      (item) => `<option value="${item.id}" ${String(item.id) === String(activeBoardId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`,
+    )
+    .join("");
+
+  return `
+    <section class="admin-section">
+      <div class="table-card">
+        <div class="admin-section-header">
+          <div>
+            <h2>检索调试</h2>
+            <div class="muted">用于验证当前板型下的 RAG 召回结果，后续聊天链路会复用这套检索。</div>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="field">
+            <label for="knowledgeRetrieveBoardSelect">检索板型</label>
+            <select class="select" id="knowledgeRetrieveBoardSelect">
+              <option value="">请选择板型</option>
+              ${boardOptions}
+            </select>
+          </div>
+          <div class="field">
+            <label for="knowledgeRetrieveQueryInput">问题</label>
+            <textarea class="composer-input form-textarea" id="knowledgeRetrieveQueryInput" placeholder="例如：ESP32-S3-WROOM-1 的 I2C 默认引脚是什么？">${escapeHtml(state.retrievalQuery)}</textarea>
+          </div>
+          <button class="button" id="knowledgeRetrieveBtn">执行检索</button>
+          <div class="retrieval-results">
+            ${
+              state.retrievalResults.length
+                ? state.retrievalResults
+                    .map(
+                      (item, index) => `
+                        <article class="retrieval-card">
+                          <div class="bubble-header">
+                            <strong>#${index + 1} ${escapeHtml(item.title || "Untitled")}</strong>
+                            <span>${escapeHtml(item.retrieval_mode || "")} · ${Number(item.score || 0).toFixed(4)}</span>
+                          </div>
+                          <div>${renderMarkdownLite(item.content || "")}</div>
+                        </article>
+                      `,
+                    )
+                    .join("")
+                : `<div class="muted">执行一次检索后，这里会显示命中的知识片段。</div>`
+            }
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderKnowledge() {
+  const tabs = [
+    { key: "ingest", label: "知识录入" },
+    { key: "manage", label: "知识库管理" },
+    { key: "retrieve", label: "检索调试" },
+  ];
+  return `
+    <section class="admin-layout">
+      <div class="content-toast-wrap">
+        ${renderBanner()}
+      </div>
+      <div class="admin-scroll">
+        <section class="admin-subnav-card">
+          <div class="admin-subnav">
+            ${tabs
+              .map(
+                (tab) => `
+                  <button class="admin-subnav-item ${tab.key === state.knowledgeSection ? "active" : ""}" data-knowledge-section="${tab.key}">
+                    ${tab.label}
+                  </button>
+                `,
+              )
+              .join("")}
+          </div>
+        </section>
+        ${state.knowledgeSection === "ingest" ? renderKnowledgeInput() : state.knowledgeSection === "manage" ? renderKnowledgeManage() : renderKnowledgeRetrieve()}
+      </div>
+    </section>
+  `;
+}
+
 function renderApp() {
   const activeSession = state.sessions.find((item) => item.id === state.activeSessionId);
   const isAdmin = state.user?.role === "admin";
+  const knowledgeTitle =
+    state.view === "board"
+      ? "板型管理"
+      : state.knowledgeSection === "ingest"
+        ? "知识录入"
+        : state.knowledgeSection === "manage"
+          ? "知识库管理"
+          : "检索调试";
 
   app.innerHTML = `
     <div class="app-shell">
@@ -973,9 +1709,13 @@ function renderApp() {
           ${
             isAdmin
               ? `
+                <button class="nav-item ${state.view === "board" ? "active" : ""}" id="boardNavBtn">
+                  <div class="nav-item-title">板型管理</div>
+                  <div class="nav-item-meta">板型、别名、软删除</div>
+                </button>
                 <button class="nav-item ${state.view === "knowledge" ? "active" : ""}" id="knowledgeNavBtn">
                   <div class="nav-item-title">知识库</div>
-                  <div class="nav-item-meta">仅管理员可见</div>
+                  <div class="nav-item-meta">录入、管理、检索调试</div>
                 </button>
                 <button class="nav-item ${state.view === "admin" ? "active" : ""}" id="adminNavBtn">
                   <div class="nav-item-title">管理面板</div>
@@ -1058,7 +1798,7 @@ function renderApp() {
             <h1>${
               escapeHtml(
                 activeSession?.title ||
-                  (state.view === "chat" ? "New chat" : state.view === "admin" ? "管理面板" : "知识库"),
+                  (state.view === "chat" ? "New chat" : state.view === "admin" ? "管理面板" : knowledgeTitle),
               )
             }</h1>
             <div class="topbar-subtitle">
@@ -1067,7 +1807,13 @@ function renderApp() {
                   ? `当前产品型号：${escapeHtml(state.currentProductModel || "未设置")}`
                   : state.view === "admin"
                     ? "邀请码、用户档位、token 统计和聊天记录均在这里管理。"
-                    : "知识库上传、解析和检索将在下一阶段接入。"
+                    : state.view === "board"
+                      ? "维护板型主数据、别名和软删除状态。"
+                      : state.knowledgeSection === "ingest"
+                        ? "录入 txt、excel、网站正文和手工文本。"
+                        : state.knowledgeSection === "manage"
+                          ? "查看并维护各板型下的知识条目。"
+                          : "验证板型知识库的 RAG 召回结果。"
               }
             </div>
           </div>
@@ -1132,15 +1878,11 @@ function renderApp() {
             `
             : state.view === "admin"
               ? renderAdmin()
-            : `
-              <section class="knowledge-placeholder">
-                ${renderBanner()}
-                <h2>知识库入口已做权限隔离</h2>
-                <p class="muted">当前只有管理员能看到这个入口。后续接入上传、解析和检索时，可以继续沿用这层角色控制。</p>
-                <div class="dev-note">下一步可以补：文件上传、异步解析任务、向量写入、列表页和筛选器。</div>
-              </section>
-            `
+                : state.view === "board"
+                  ? renderBoardManagement()
+                  : renderKnowledge()
         }
+        ${renderKnowledgeDetailModal()}
       </main>
     </div>
 
@@ -1157,9 +1899,17 @@ function renderApp() {
     state.view = "chat";
     render();
   });
+  document.getElementById("boardNavBtn")?.addEventListener("click", () => {
+    state.view = "board";
+    loadKnowledgeData()
+      .then(() => render())
+      .catch((error) => setMessage("error", error.message));
+  });
   document.getElementById("knowledgeNavBtn")?.addEventListener("click", () => {
     state.view = "knowledge";
-    render();
+    loadKnowledgeData()
+      .then(() => render())
+      .catch((error) => setMessage("error", error.message));
   });
   document.getElementById("adminNavBtn")?.addEventListener("click", () => {
     state.view = "admin";
@@ -1202,6 +1952,10 @@ function renderApp() {
   document.getElementById("settingsBtn")?.addEventListener("click", () => setMessage("success", "Settings 面板下一步会拆成独立弹窗。"));
   document.getElementById("createInviteBtn")?.addEventListener("click", () => {
     createInviteCode().catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("inviteCreateToggleBtn")?.addEventListener("click", () => {
+    state.inviteCreateOpen = !state.inviteCreateOpen;
+    render();
   });
   document.querySelectorAll("[data-admin-section]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1251,14 +2005,115 @@ function renderApp() {
       .then(() => render())
       .catch((error) => setMessage("error", error.message));
   });
+  document.querySelectorAll("[data-knowledge-section]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.knowledgeSection = button.getAttribute("data-knowledge-section");
+      render();
+    });
+  });
+  document.getElementById("boardCreateToggleBtn")?.addEventListener("click", () => {
+    state.boardCreateOpen = !state.boardCreateOpen;
+    render();
+  });
+  document.querySelectorAll("[data-board-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const board = state.boardItems.find((item) => String(item.id) === String(button.getAttribute("data-board-edit")));
+      if (board) {
+        resetBoardForm(board);
+        state.boardCreateOpen = true;
+        render();
+      }
+    });
+  });
+  document.querySelectorAll("[data-board-delete]").forEach((button) => {
+    button.addEventListener("click", () => {
+      deleteBoard(Number(button.getAttribute("data-board-delete"))).catch((error) => setMessage("error", error.message));
+    });
+  });
+  document.getElementById("boardResetBtn")?.addEventListener("click", () => {
+    resetBoardForm();
+    state.boardCreateOpen = false;
+    render();
+  });
+  document.getElementById("boardSaveBtn")?.addEventListener("click", () => {
+    const action = state.boardForm.id ? updateBoard : createBoard;
+    action().catch((error) => setMessage("error", error.message));
+  });
+  document.querySelectorAll("[data-knowledge-input-type]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.knowledgeInputType = button.getAttribute("data-knowledge-input-type");
+      render();
+    });
+  });
+  document.getElementById("knowledgeFileSubmitBtn")?.addEventListener("click", () => {
+    createKnowledgeFromFile().catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("knowledgeTextSubmitBtn")?.addEventListener("click", () => {
+    createKnowledgeFromText().catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("knowledgeWebsiteSubmitBtn")?.addEventListener("click", () => {
+    createKnowledgeFromWebsite().catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("knowledgeFilterBoardSelect")?.addEventListener("change", (event) => {
+    state.selectedBoardId = event.target.value;
+    loadKnowledgeData()
+      .then(() => render())
+      .catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("knowledgeFilterTypeSelect")?.addEventListener("change", (event) => {
+    state.knowledgeFilterType = event.target.value;
+    loadKnowledgeData()
+      .then(() => render())
+      .catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("knowledgeFilterStatusSelect")?.addEventListener("change", (event) => {
+    state.knowledgeFilterStatus = event.target.value;
+    loadKnowledgeData()
+      .then(() => render())
+      .catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("knowledgeBoardSelect")?.addEventListener("change", (event) => {
+    state.selectedBoardId = event.target.value || state.selectedBoardId;
+  });
+  document.getElementById("knowledgeRetrieveBoardSelect")?.addEventListener("change", (event) => {
+    state.selectedBoardId = event.target.value || state.selectedBoardId;
+  });
+  document.getElementById("knowledgeRetrieveBtn")?.addEventListener("click", () => {
+    runKnowledgeRetrieve().catch((error) => setMessage("error", error.message));
+  });
+  document.querySelectorAll("[data-knowledge-delete]").forEach((button) => {
+    button.addEventListener("click", () => {
+      deleteKnowledgeDocument(button.getAttribute("data-knowledge-delete")).catch((error) => setMessage("error", error.message));
+    });
+  });
+  document.querySelectorAll("[data-knowledge-detail]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openKnowledgeDetail(button.getAttribute("data-knowledge-detail")).catch((error) => setMessage("error", error.message));
+    });
+  });
+  document.getElementById("knowledgeDetailCloseBtn")?.addEventListener("click", () => closeKnowledgeDetail());
+  document.getElementById("knowledgeDetailBackdrop")?.addEventListener("click", (event) => {
+    if (event.target?.id === "knowledgeDetailBackdrop") {
+      closeKnowledgeDetail();
+    }
+  });
+  document.getElementById("knowledgeRetryBtn")?.addEventListener("click", () => {
+    const documentId = document.getElementById("knowledgeRetryBtn")?.getAttribute("data-knowledge-retry");
+    if (!documentId) return;
+    retryKnowledgeDocument(documentId).catch((error) => setMessage("error", error.message));
+  });
 }
 
 function render() {
+  if (state.user && state.user.role !== "admin" && ["admin", "knowledge", "board"].includes(state.view)) {
+    state.view = "chat";
+  }
   if (!state.user) {
     renderLogin();
     return;
   }
   renderApp();
+  scheduleKnowledgePolling();
   if (state.view === "admin") {
     requestAnimationFrame(() => restoreAdminScrollPosition());
   }

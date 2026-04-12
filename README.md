@@ -8,7 +8,7 @@
 - 用户 Usage / Profile 基础接口
 - PostgreSQL + pgvector 的数据库初始化脚本
 
-知识库模块的数据库结构已经预留，但上传、解析、RAG 检索会放到下一阶段继续接入。
+知识库模块现已接入第一版板型知识库和 RAG 基础能力，优先支持 `txt`、`excel(xlsx)`、网站正文和直接输入文本；GitHub / MCP 仅预留扩展位，暂未启用。
 
 ## 当前能力
 
@@ -23,7 +23,10 @@
 - 支持邮箱 6 位验证码登录
 - 支持聊天 Session 持久化与 Recent 列表
 - 支持按用户统计最近 7 天 token usage
-- 预留知识库表结构与 `pgvector` 向量字段
+- 支持板型管理、知识条目录入与软删除
+- 支持 `txt` / `xlsx` / 网站正文 / 手工文本入库
+- 支持基于 `pgvector` 的板型级知识检索
+- 聊天链路已接入板型知识召回
 
 ## 当前支持的产品
 
@@ -43,8 +46,10 @@ hdAgent/
 │   ├── app/
 │   │   ├── api/                  # 业务路由层
 │   │   ├── core/                 # 配置、数据库、基础安全工具
+│   │   ├── knowledge/            # chunk、embedding、检索等知识库基础模块
+│   │   ├── mcp/                  # 预留给 GitHub MCP / 工具调用的扩展模块
 │   │   ├── schemas/              # 阶段一的新接口请求/响应模型
-│   │   ├── services/             # 认证、聊天、邮件发送等服务逻辑
+│   │   ├── services/             # 认证、聊天、知识库等服务逻辑
 │   │   └── main.py               # 当前 FastAPI 主入口
 │   ├── sql/
 │   │   └── 001_init_postgres.sql # PostgreSQL + pgvector 初始化脚本
@@ -142,16 +147,39 @@ QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MODEL=qwen-plus
 ```
 
+### 知识库 / RAG 配置
+
+```env
+KNOWLEDGE_STORAGE_DIR=./data/knowledge
+KNOWLEDGE_CHUNK_SIZE=1200
+KNOWLEDGE_CHUNK_OVERLAP=180
+KNOWLEDGE_TOP_K=5
+
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_API_KEY=
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_TIMEOUT_SECONDS=30
+
+MCP_GITHUB_ENABLED=false
+```
+
+说明：
+
+- `EMBEDDING_*` 没配置时，知识库仍可入库，但检索会回退到 PostgreSQL 全文检索
+- `MCP_GITHUB_ENABLED` 目前只是预留开关，不会真正启用 GitHub MCP
+
 ## 数据库初始化
 
 完整 SQL 位于：
 
 - `backend/sql/001_init_postgres.sql`
+- `backend/sql/002_knowledge_rag.sql`
 
 执行方式：
 
 ```bash
 psql -U postgres -f backend/sql/001_init_postgres.sql
+psql -U postgres -d hdagent -f backend/sql/002_knowledge_rag.sql
 ```
 
 该脚本会完成：
@@ -160,6 +188,14 @@ psql -U postgres -f backend/sql/001_init_postgres.sql
 - 创建 `hdagent` 数据库
 - 启用 `vector`、`pgcrypto`、`citext` 扩展
 - 创建用户、登录、聊天、usage、知识库预留表
+
+第二个迁移会继续完成：
+
+- 创建 `board_type`、`board_alias`
+- 创建 `knowledge_document_v2`、`knowledge_chunk_v2`、`knowledge_job_v2`
+- 初始化 `MaTouch_ESP32S3` 和 `ESP32-S3-WROOM-1`
+- 初始化板型别名
+- 建立 `pgvector` 检索索引和 `tsvector` 全文检索索引
 
 如果你本机还没装 `pgvector`：
 
@@ -219,6 +255,147 @@ SSE 主要事件：
 - `GET /api/user/profile`
 - `GET /api/user/usage/daily`
 
+### 知识库管理
+
+- `GET /api/admin/boards`
+- `GET /api/admin/boards/{board_id}`
+- `POST /api/admin/boards`
+- `PATCH /api/admin/boards/{board_id}`
+- `DELETE /api/admin/boards/{board_id}`
+- `GET /api/admin/knowledge/documents`
+- `GET /api/admin/knowledge/documents/{document_id}`
+- `POST /api/admin/knowledge/documents/text`
+- `POST /api/admin/knowledge/documents/website`
+- `POST /api/admin/knowledge/documents/file`
+- `GET /api/admin/knowledge/documents/{document_id}/download`
+- `DELETE /api/admin/knowledge/documents/{document_id}`
+- `POST /api/admin/knowledge/retrieve`
+
+## 知识库使用说明
+
+### 1. 安装依赖
+
+新增依赖：
+
+- `openpyxl`
+- `python-multipart`
+
+执行：
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. 板型管理
+
+板型是知识库的一级归属对象，采用软删除。
+
+创建板型示例：
+
+```bash
+curl 'http://127.0.0.1:8000/api/admin/boards' \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -b cookies.txt \
+  --data-raw '{
+    "code": "esp32_s3_custom",
+    "name": "ESP32-S3-CUSTOM",
+    "description": "Custom S3 board",
+    "default_hint": "可以先问我接线和初始化。",
+    "aliases": ["custom s3", "esp32 s3 custom"],
+    "is_enabled": true
+  }'
+```
+
+软删除板型示例：
+
+```bash
+curl 'http://127.0.0.1:8000/api/admin/boards/3' \
+  -X DELETE \
+  -b cookies.txt
+```
+
+### 3. 录入文本知识
+
+```bash
+curl 'http://127.0.0.1:8000/api/admin/knowledge/documents/text' \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -b cookies.txt \
+  --data-raw '{
+    "board_type_id": 2,
+    "title": "ESP32-S3 I2C 默认引脚",
+    "text": "ESP32-S3-WROOM-1 默认 SDA 为 GPIO17，SCL 为 GPIO18。"
+  }'
+```
+
+### 4. 上传 txt / xlsx
+
+```bash
+curl 'http://127.0.0.1:8000/api/admin/knowledge/documents/file' \
+  -X POST \
+  -b cookies.txt \
+  -F 'board_type_id=2' \
+  -F 'file=@./samples/i2c_guide.txt'
+```
+
+### 5. 录入网站正文
+
+当前阶段网站能力是“保存链接 + 手工粘贴正文”，暂不做爬虫抓取。
+
+```bash
+curl 'http://127.0.0.1:8000/api/admin/knowledge/documents/website' \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -b cookies.txt \
+  --data-raw '{
+    "board_type_id": 2,
+    "title": "ESP32 官方文档摘录",
+    "source_url": "https://docs.espressif.com/",
+    "content": "这里填清洗后的正文内容"
+  }'
+```
+
+### 6. 检索调试
+
+```bash
+curl 'http://127.0.0.1:8000/api/admin/knowledge/retrieve' \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -b cookies.txt \
+  --data-raw '{
+    "board_type_id": 2,
+    "query": "ESP32-S3-WROOM-1 的 I2C 默认引脚是什么？",
+    "top_k": 5
+  }'
+```
+
+### 7. 聊天里的 RAG 行为
+
+当前聊天链路的处理顺序：
+
+1. 识别产品型号
+2. 根据产品型号映射到 `board_type`
+3. 在该板型下检索 `knowledge_chunk_v2`
+4. 把命中的知识片段拼进系统提示词
+5. 再调用对应 LLM 生成最终回复
+
+如果 embedding 可用：
+
+- 优先走 `pgvector` 相似度检索
+
+如果 embedding 不可用：
+
+- 自动回退到 PostgreSQL 全文检索
+
+## 当前限制
+
+- 文件上传当前只支持 `.txt` 和 `.xlsx/.xlsm/.xltx/.xltm`
+- 网站知识当前只支持手工粘贴正文，不会自动抓网页
+- 知识入库当前是同步执行，后续可迁移到异步 job worker
+- GitHub repo / MCP tools 当前仅预留模块，不会被聊天调用
+- 产品静态知识文件 `backend/product_knowledge/*.md` 仍保留作为兼容兜底
+
 ## 聊天主流程
 
 1. 用户先完成 Google 登录或邮箱验证码登录
@@ -227,16 +404,16 @@ SSE 主要事件：
 4. 新建聊天时写入 `chat_session`
 5. 用户发消息后写入 `chat_message`
 6. LangGraph 判断本轮是设置产品、生成代码还是普通聊天
-7. 根据当前产品型号拼接系统提示词与产品知识
+7. 根据当前产品型号拼接系统提示词、静态产品知识和板型知识库检索结果
 8. 调用对应 LLM 流式输出
 9. 将 assistant 回复与 usage 写回数据库
 
 ## 后续计划
 
-- 知识库列表页
-- 上传弹窗与文件解析队列
-- 文档 chunk、embedding、向量检索
-- 聊天接入 RAG
+- 知识入库异步队列
+- 网站正文自动抓取和清洗
+- GitHub repo + MCP tools
+- RAG 与工具调用联合编排
 - 手机验证码登录
 
 ## 开发说明

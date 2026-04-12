@@ -900,6 +900,239 @@ button {
   flex-wrap: wrap;
 }
 
+.knowledge-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.collapsible-card {
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.collapsible-trigger {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  background: transparent;
+  color: var(--text);
+  border-bottom: 1px solid transparent;
+}
+
+.collapsible-trigger.is-open {
+  border-bottom-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.collapsible-body {
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-soft);
+}
+
+.form-textarea {
+  min-height: 104px;
+  resize: vertical;
+  border-radius: 16px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  padding: 13px 15px;
+}
+
+.form-textarea-lg {
+  min-height: 220px;
+}
+
+.knowledge-filter-row {
+  min-width: 0;
+}
+
+.knowledge-filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.knowledge-filters-compact {
+  gap: 8px;
+  align-items: center;
+}
+
+.knowledge-filters-compact .select {
+  width: auto;
+  min-width: 118px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.status-completed {
+  color: #bbf7d0;
+  background: rgba(16, 163, 127, 0.12);
+  border-color: rgba(16, 163, 127, 0.24);
+}
+
+.status-failed {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.24);
+}
+
+.status-queued,
+.status-uploaded,
+.status-parsing,
+.status-chunking,
+.status-embedding {
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+.retrieval-results {
+  display: grid;
+  gap: 12px;
+}
+
+.retrieval-card {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+}
+
+.inline-link-button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.detail-grid > div {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+}
+
+.detail-box {
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px 14px;
+  line-height: 1.6;
+  color: var(--text);
+  min-width: 0;
+}
+
+.detail-link {
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.detail-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.detail-preview {
+  max-height: 340px;
+  overflow: auto;
+}
+
+.detail-error {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.24);
+}
+
+.job-list {
+  display: grid;
+  gap: 10px;
+}
+
+.chunk-list {
+  display: grid;
+  gap: 10px;
+}
+
+.job-card {
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+  backdrop-filter: blur(4px);
+}
+
+.modal-panel {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border-radius: 24px;
+  border: 1px solid var(--border);
+  background: #1e1e1e;
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+
+.modal-panel-lg {
+  width: min(980px, 100%);
+}
+
 @media (max-width: 960px) {
   .login-shell,
   .app-shell {
@@ -926,7 +1159,14 @@ button {
   }
 
   .stats-grid,
-  .admin-chat-grid {
+  .admin-chat-grid,
+  .knowledge-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-documents-layout,
+  .knowledge-documents-layout:has(.knowledge-detail-panel),
+  .detail-grid {
     grid-template-columns: 1fr;
   }
 

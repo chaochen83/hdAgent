@@ -10,6 +10,8 @@ from ...product_knowledge import PRODUCT_MODEL_LIST, get_product_hint
 from ...schemas import ChatMessage, ChatState, GraphState
 from ..core.config import settings
 from ..core.database import get_db
+from ..knowledge.retrieval import build_rag_context
+from .knowledge_service import resolve_board_for_chat
 
 
 def sse_event(event: str, data: str) -> str:
@@ -103,6 +105,16 @@ def _truncate_title(text: str) -> str:
     if not normalized:
         return "New chat"
     return normalized[:80]
+
+
+def _build_knowledge_links(rows: list[dict[str, Any]], *, max_items: int = 3) -> str:
+    if not rows:
+        return ""
+    items = []
+    for index, row in enumerate(rows[:max_items], start=1):
+        label = row.get("title") or row.get("source_name") or f"板卡资料 {index}"
+        items.append(f"- [板卡资料 {index}: {label}](/knowledge/chunks/{row['id']})")
+    return "\n".join(items)
 
 
 def _assert_chat_rate_limit(*, user_id: int) -> None:
@@ -276,6 +288,21 @@ async def stream_chat_reply(
         resolved_product_model,
         include_device_context=state.intent == "generate_code",
     )
+    board = resolve_board_for_chat(resolved_product_model)
+    rag_rows: list[dict[str, Any]] = []
+    if board and board.get("id"):
+        rag_context, rag_rows = await build_rag_context(
+            board_type_id=board["id"],
+            query=text,
+            limit=settings.knowledge_top_k,
+        )
+        if rag_context:
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                "Board knowledge retrieved from the managed knowledge base:\n"
+                f"{rag_context}\n\n"
+                "Use the retrieved knowledge when it is relevant. If it conflicts with the user's latest input, explain the conflict."
+            )
     messages = [ChatMessage(role="system", content=system_prompt), *history]
     llm_state = ChatState(
         messages=messages,
@@ -299,6 +326,12 @@ async def stream_chat_reply(
         yield sse_event("error", str(exc))
         yield sse_event("end", "[DONE]")
         return
+
+    source_links = _build_knowledge_links(rag_rows)
+    if source_links:
+        citation_block = f"\n\n参考资料：\n{source_links}"
+        buffer += citation_block
+        yield sse_event("token", citation_block)
 
     latency_ms = int((time.perf_counter() - started_at) * 1000)
     prompt_tokens = sum(_estimate_tokens(item.content) for item in messages)

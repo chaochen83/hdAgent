@@ -1,5 +1,6 @@
 from langgraph.graph import END, StateGraph
 
+from .app.services.knowledge_service import list_active_board_names, resolve_board_for_chat
 from .llm_providers import detect_intent_with_llm
 from .product_knowledge import PRODUCTS, list_product_models, normalize_text
 from .schemas import GraphState
@@ -9,6 +10,9 @@ def _resolve_product_model_from_text(text: str) -> str | None:
     text_n = normalize_text(text or "")
     if not text_n:
         return None
+    board = resolve_board_for_chat(text)
+    if board:
+        return board["name"]
     for model in list_product_models():
         if normalize_text(model) in text_n:
             return model
@@ -21,12 +25,13 @@ def _resolve_product_model_from_text(text: str) -> str | None:
 
 
 async def intent_node(state: GraphState) -> GraphState:
+    product_model_list = list_active_board_names() or list_product_models()
     info = await detect_intent_with_llm(
         provider=state.provider,
         model=state.model,
         messages=state.messages,
         current_product_model=state.current_product_model,
-        product_model_list=list_product_models(),
+        product_model_list=product_model_list,
     )
 
     # print (f"intent_node: info={info}")
@@ -115,4 +120,3 @@ graph_builder.add_edge("generate_code", END)
 graph_builder.add_edge("general_chat", END)
 
 chat_graph = graph_builder.compile()
-
