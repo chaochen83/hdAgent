@@ -486,6 +486,56 @@ button {
   padding: 30px 24px 12px;
 }
 
+.chat-scroll-actions {
+  position: absolute;
+  left: 50%;
+  bottom: 148px;
+  transform: translateX(-50%);
+  z-index: 8;
+  pointer-events: none;
+}
+
+.chat-scroll-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(20, 20, 20, 0.18);
+  color: #f7fffc;
+  backdrop-filter: blur(18px);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.1),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
+  font-size: 18px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    transform 120ms ease,
+    opacity 160ms ease,
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.chat-scroll-button:hover {
+  transform: translateY(-1px);
+  background: rgba(20, 20, 20, 0.28);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.chat-scroll-button:focus-visible {
+  outline: 2px solid rgba(16, 163, 127, 0.8);
+  outline-offset: 3px;
+}
+
+.chat-scroll-button.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+}
+
 .chat-stack {
   max-width: 900px;
   margin: 0 auto;
@@ -606,6 +656,17 @@ button {
   margin-top: 10px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .chat-scroll-actions {
+    bottom: 138px;
+  }
+
+  .chat-scroll-button {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 .user-panel {

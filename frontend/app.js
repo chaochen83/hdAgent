@@ -65,6 +65,22 @@ function scrollChatFeedToBottom() {
   const feed = document.querySelector(".chat-feed");
   if (!feed) return;
   feed.scrollTop = feed.scrollHeight;
+  updateScrollToBottomButtonVisibility();
+}
+
+function updateScrollToBottomButtonVisibility() {
+  const feed = document.querySelector(".chat-feed");
+  const button = document.getElementById("scrollToBottomBtn");
+  if (!feed || !button) return;
+  const distanceToBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+  button.classList.toggle("is-hidden", distanceToBottom < 160);
+}
+
+function bindChatFeedInteractions() {
+  const feed = document.querySelector(".chat-feed");
+  if (!feed) return;
+  feed.addEventListener("scroll", updateScrollToBottomButtonVisibility);
+  updateScrollToBottomButtonVisibility();
 }
 
 async function apiFetch(url, options = {}) {
@@ -1954,6 +1970,11 @@ function renderApp() {
                 <div class="chat-feed">
                   ${renderMessages()}
                 </div>
+                <div class="chat-scroll-actions">
+                  <button class="chat-scroll-button" id="scrollToBottomBtn" type="button" aria-label="滚动到最新消息" title="滚动到最新消息">
+                    <span aria-hidden="true">↓</span>
+                  </button>
+                </div>
                 <div class="composer-shell">
                   <div class="composer-card">
                     <div class="composer-row">
@@ -2025,6 +2046,9 @@ function renderApp() {
   });
   document.getElementById("sendBtn")?.addEventListener("click", () => {
     sendMessage().catch((error) => setMessage("error", error.message));
+  });
+  document.getElementById("scrollToBottomBtn")?.addEventListener("click", () => {
+    scrollChatFeedToBottom();
   });
   document.getElementById("composerInput")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -2212,6 +2236,9 @@ function render() {
   }
   renderApp();
   scheduleKnowledgePolling();
+  if (state.view === "chat") {
+    requestAnimationFrame(() => bindChatFeedInteractions());
+  }
   if (state.view === "admin") {
     requestAnimationFrame(() => restoreAdminScrollPosition());
   }
