@@ -48,5 +48,8 @@ async def session_stream(session_id: str, payload: SessionStreamRequest, request
         provider=payload.provider,
         model=payload.model,
         current_product_model=payload.current_product_model,
+        product_model_switch_decision=payload.product_model_switch_decision,
+        pending_product_model=payload.pending_product_model,
+        pending_original_message=payload.pending_original_message,
     )
     return StreamingResponse(generator, media_type="text/event-stream")

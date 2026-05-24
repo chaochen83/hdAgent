@@ -329,7 +329,7 @@ curl 'http://127.0.0.1:8000/api/admin/knowledge/documents/text' \
   }'
 ```
 
-### 4. 上传 txt / xlsx
+### 4. 上传 txt / pdf / xlsx / cad 设计文件
 
 ```bash
 curl 'http://127.0.0.1:8000/api/admin/knowledge/documents/file' \
@@ -390,7 +390,7 @@ curl 'http://127.0.0.1:8000/api/admin/knowledge/retrieve' \
 
 ## 当前限制
 
-- 文件上传当前只支持 `.txt` 和 `.xlsx/.xlsm/.xltx/.xltm`
+- 文件上传当前支持 `.txt`、`.pdf`、`.xlsx/.xlsm/.xltx/.xltm` 以及常见 CAD 设计文件（如 `.sch/.pro/.brd/.kicad_*`）
 - 网站知识当前只支持手工粘贴正文，不会自动抓网页
 - 知识入库当前是同步执行，后续可迁移到异步 job worker
 - GitHub repo / MCP tools 当前仅预留模块，不会被聊天调用

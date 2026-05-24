@@ -691,8 +691,8 @@ def soft_delete_knowledge_document(*, document_id: str, deleted_by_user_id: int)
 
 def get_document_download_path(*, document_id: str) -> tuple[str, str]:
     doc = get_knowledge_document(document_id=document_id)
-    if doc.get("knowledge_type") not in {"txt", "excel"} or not doc.get("storage_path"):
-        raise HTTPException(status_code=404, detail="Source download is only available for uploaded txt/excel files.")
+    if doc.get("knowledge_type") not in {"txt", "pdf", "excel", "cad"} or not doc.get("storage_path"):
+        raise HTTPException(status_code=404, detail="Source download is only available for uploaded txt/pdf/excel/cad files.")
     path = doc["storage_path"]
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Source file not found on disk.")

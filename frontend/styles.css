@@ -562,6 +562,13 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.message-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
 .composer-shell {
   padding: 18px 24px 24px;
 }

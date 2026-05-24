@@ -28,5 +28,5 @@ class GraphState(BaseModel):
     provider: str = "deepseek"
     model: Optional[str] = None
     intent: Optional[str] = None
+    fallback_intent: Optional[str] = None
     matched_product_model: Optional[str] = None
-

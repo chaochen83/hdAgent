@@ -5,6 +5,20 @@ from .llm_providers import detect_intent_with_llm
 from .product_knowledge import PRODUCTS, list_product_models, normalize_text
 from .schemas import GraphState
 
+SET_PRODUCT_MODEL_HINTS = (
+    "切到",
+    "切换到",
+    "改成",
+    "换成",
+    "选择",
+    "用",
+    "使用",
+    "设为",
+    "设置为",
+    "现在问的是",
+    "我要问的是",
+)
+
 
 def _resolve_product_model_from_text(text: str) -> str | None:
     text_n = normalize_text(text or "")
@@ -22,6 +36,33 @@ def _resolve_product_model_from_text(text: str) -> str | None:
             if alias_n and alias_n in text_n:
                 return model
     return None
+
+
+def _same_product_model(left: str | None, right: str | None) -> bool:
+    return bool(left and right and normalize_text(left) == normalize_text(right))
+
+
+def _has_explicit_set_product_model_intent(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(hint in lowered for hint in SET_PRODUCT_MODEL_HINTS)
+
+
+def _should_set_product_model(
+    *,
+    detected_intent: str,
+    explicit_model_in_text: str | None,
+    current_product_model: str | None,
+    last_user_message: str,
+) -> bool:
+    if detected_intent == "set_product_model":
+        return True
+    if not explicit_model_in_text:
+        return False
+    if _has_explicit_set_product_model_intent(last_user_message):
+        return True
+    if not current_product_model:
+        return True
+    return not _same_product_model(explicit_model_in_text, current_product_model)
 
 
 async def intent_node(state: GraphState) -> GraphState:
@@ -44,9 +85,16 @@ async def intent_node(state: GraphState) -> GraphState:
 
     explicit_model_in_text = _resolve_product_model_from_text(last_user)
     matched = info.get("product_model") or explicit_model_in_text
-    intent = info.get("intent", "general_chat")
-    # 仅当用户这轮文本里明确出现型号/别名，或模型明确判定 set_product_model 时，才进入设置型号分支
-    if intent == "set_product_model" or explicit_model_in_text:
+    detected_intent = info.get("intent", "general_chat")
+    fallback_intent = detected_intent if detected_intent in {"generate_code", "general_chat"} else "general_chat"
+    intent = detected_intent
+    # set_product_model 表示“修改当前会话上下文”，而不是“消息里出现了板型字符串”。
+    if _should_set_product_model(
+        detected_intent=detected_intent,
+        explicit_model_in_text=explicit_model_in_text,
+        current_product_model=state.current_product_model,
+        last_user_message=last_user,
+    ):
         intent = "set_product_model"
 
     return GraphState(
@@ -55,6 +103,7 @@ async def intent_node(state: GraphState) -> GraphState:
         provider=state.provider,
         model=state.model,
         intent=intent,
+        fallback_intent=fallback_intent,
         matched_product_model=matched,
     )
 
@@ -66,6 +115,7 @@ def set_product_model_node(state: GraphState) -> GraphState:
         provider=state.provider,
         model=state.model,
         intent="set_product_model",
+        fallback_intent=state.fallback_intent,
         matched_product_model=state.matched_product_model,
     )
 
@@ -77,6 +127,7 @@ def generate_code_node(state: GraphState) -> GraphState:
         provider=state.provider,
         model=state.model,
         intent="generate_code",
+        fallback_intent=state.fallback_intent,
         matched_product_model=state.matched_product_model,
     )
 
@@ -88,6 +139,7 @@ def general_chat_node(state: GraphState) -> GraphState:
         provider=state.provider,
         model=state.model,
         intent="general_chat",
+        fallback_intent=state.fallback_intent,
         matched_product_model=state.matched_product_model,
     )
 

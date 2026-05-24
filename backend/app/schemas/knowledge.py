@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-KnowledgeType = Literal["txt", "excel", "text", "website"]
+KnowledgeType = Literal["txt", "pdf", "excel", "cad", "text", "website"]
 
 
 class BoardUpsertRequest(BaseModel):

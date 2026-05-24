@@ -11,6 +11,7 @@ const state = {
   provider: "openai",
   model: "",
   currentProductModel: "",
+  pendingProductModelSwitch: null,
   view: "chat",
   authMode: "request-code",
   email: "",
@@ -59,6 +60,12 @@ const state = {
 
 let messageTimer = null;
 let knowledgePollTimer = null;
+
+function scrollChatFeedToBottom() {
+  const feed = document.querySelector(".chat-feed");
+  if (!feed) return;
+  feed.scrollTop = feed.scrollHeight;
+}
 
 async function apiFetch(url, options = {}) {
   const isFormData = options.body instanceof FormData;
@@ -198,6 +205,36 @@ function renderMarkdownLite(text) {
     .join("");
 }
 
+function renderHardwareResources(resources) {
+  if (!Array.isArray(resources) || !resources.length) return "";
+  return `
+    <div class="field">
+      <label>硬件资源映射</label>
+      <div class="detail-box">
+        <table class="admin-table">
+          <thead>
+            <tr><th>功能</th><th>GPIO / 信号</th><th>网络名</th><th>连接对象</th></tr>
+          </thead>
+          <tbody>
+            ${resources
+              .map(
+                (item) => `
+                  <tr>
+                    <td>${escapeHtml(item.function || "-")}</td>
+                    <td>${escapeHtml(item.mcu_part && item.gpio_pin ? `${item.mcu_part}.${item.gpio_pin}` : item.gpio_pin || "-")}</td>
+                    <td>${escapeHtml(item.net_name || "-")}</td>
+                    <td>${escapeHtml((item.connected_refs || []).join(", ") || "-")}</td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 async function initialize() {
   try {
     const [bootstrap, authConfig, me, productModels] = await Promise.all([
@@ -243,6 +280,7 @@ async function loadSessions() {
 
 async function openSession(sessionId) {
   state.activeSessionId = sessionId;
+  state.pendingProductModelSwitch = null;
   const payload = await apiFetch(`/api/chat/sessions/${sessionId}/messages`);
   state.messages = payload.messages || [];
   const active = state.sessions.find((item) => item.id === sessionId);
@@ -252,6 +290,7 @@ async function openSession(sessionId) {
     state.currentProductModel = active.current_product_model || "";
   }
   render();
+  requestAnimationFrame(() => scrollChatFeedToBottom());
 }
 
 async function createSession() {
@@ -267,6 +306,7 @@ async function createSession() {
   state.sessions = [session, ...state.sessions];
   state.activeSessionId = session.id;
   state.messages = [];
+  state.pendingProductModelSwitch = null;
   render();
   return session;
 }
@@ -485,7 +525,7 @@ async function createKnowledgeFromFile() {
   const fileInput = document.getElementById("knowledgeFileInput");
   const file = fileInput?.files?.[0];
   if (!boardTypeId || !file) {
-    setMessage("error", "请先选择板型并上传 txt 或 xlsx 文件。");
+    setMessage("error", "请先选择板型并上传 txt、pdf、xlsx 或 CAD 设计文件。");
     return;
   }
   const formData = new FormData();
@@ -642,9 +682,12 @@ async function toggleUserPanel() {
   render();
 }
 
-async function sendMessage() {
+async function sendMessage(options = {}) {
   const textarea = document.getElementById("composerInput");
-  const message = textarea?.value?.trim();
+  const message = (options.message ?? textarea?.value ?? "").trim();
+  const switchDecision = options.productModelSwitchDecision || null;
+  const pendingSwitch = options.pendingProductModelSwitch || null;
+  const addUserMessage = options.addUserMessage !== false;
   if (!message || state.sending) return;
 
   state.sending = true;
@@ -656,21 +699,29 @@ async function sendMessage() {
     sessionId = session.id;
   }
 
-  const userMessage = {
-    id: `local-user-${Date.now()}`,
-    role: "user",
-    content: message,
-    created_at: new Date().toISOString(),
-  };
   const assistantMessage = {
     id: `local-assistant-${Date.now()}`,
     role: "assistant",
     content: "",
     created_at: new Date().toISOString(),
   };
-  state.messages = [...state.messages, userMessage, assistantMessage];
-  textarea.value = "";
+  const nextMessages = [...state.messages];
+  if (addUserMessage) {
+    nextMessages.push({
+      id: `local-user-${Date.now()}`,
+      role: "user",
+      content: message,
+      created_at: new Date().toISOString(),
+    });
+  }
+  nextMessages.push(assistantMessage);
+  state.messages = nextMessages;
+  state.pendingProductModelSwitch = null;
+  if (textarea && addUserMessage) {
+    textarea.value = "";
+  }
   render();
+  requestAnimationFrame(() => scrollChatFeedToBottom());
 
   try {
     const response = await fetch(`/api/chat/sessions/${sessionId}/stream`, {
@@ -682,6 +733,9 @@ async function sendMessage() {
         provider: state.provider,
         model: state.model || null,
         current_product_model: state.currentProductModel || null,
+        product_model_switch_decision: switchDecision,
+        pending_product_model: pendingSwitch?.pendingProductModel || null,
+        pending_original_message: pendingSwitch?.originalMessage || null,
       }),
     });
 
@@ -702,12 +756,25 @@ async function sendMessage() {
         assistantMessage.content += data;
       } else if (currentEvent === "product_model") {
         state.currentProductModel = data;
+      } else if (currentEvent === "confirm_product_model_switch") {
+        try {
+          const payload = JSON.parse(data);
+          state.pendingProductModelSwitch = {
+            currentProductModel: payload.current_product_model || "",
+            pendingProductModel: payload.pending_product_model || "",
+            originalMessage: payload.original_message || message,
+            assistantMessageId: assistantMessage.id,
+          };
+        } catch (error) {
+          state.error = "切换板型确认消息解析失败。";
+        }
       } else if (currentEvent === "error") {
         state.error = data;
       }
       currentEvent = "message";
       currentData = [];
       render();
+      requestAnimationFrame(() => scrollChatFeedToBottom());
     };
 
     while (true) {
@@ -742,7 +809,18 @@ async function sendMessage() {
   } finally {
     state.sending = false;
     render();
+    requestAnimationFrame(() => scrollChatFeedToBottom());
   }
+}
+
+async function confirmProductModelSwitch(decision) {
+  if (!state.pendingProductModelSwitch || state.sending) return;
+  await sendMessage({
+    message: state.pendingProductModelSwitch.originalMessage,
+    productModelSwitchDecision: decision,
+    pendingProductModelSwitch: state.pendingProductModelSwitch,
+    addUserMessage: false,
+  });
 }
 
 function renderBanner() {
@@ -873,6 +951,18 @@ function renderMessages() {
                   <span>${formatTime(message.created_at)}</span>
                 </div>
                 <div>${renderMarkdownLite(message.content || "")}</div>
+                ${
+                  message.role === "assistant" &&
+                  state.pendingProductModelSwitch &&
+                  state.pendingProductModelSwitch.assistantMessageId === message.id
+                    ? `
+                      <div class="message-actions">
+                        <button class="button" data-switch-decision="yes" ${state.sending ? "disabled" : ""}>是，切换板型</button>
+                        <button class="button button-secondary" data-switch-decision="no" ${state.sending ? "disabled" : ""}>否，继续回答</button>
+                      </div>
+                    `
+                    : ""
+                }
               </div>
             </article>
           `,
@@ -1332,7 +1422,7 @@ function renderKnowledgeInput() {
         <div class="admin-section-header">
           <div>
             <h2>知识录入</h2>
-            <div class="muted">先选择板型，再录入 txt、excel、网站正文或直接输入文本。</div>
+            <div class="muted">先选择板型，再录入 txt、pdf、excel、CAD 设计文件、网站正文或直接输入文本。</div>
           </div>
         </div>
         <div class="stack">
@@ -1362,8 +1452,9 @@ function renderKnowledgeInput() {
             state.knowledgeInputType === "file"
               ? `
                 <div class="field">
-                  <label for="knowledgeFileInput">上传 txt / xlsx</label>
-                  <input class="input" id="knowledgeFileInput" type="file" accept=".txt,.xlsx,.xlsm,.xltx,.xltm" />
+                  <label for="knowledgeFileInput">上传 txt / pdf / xlsx / sch / pro / brd</label>
+                  <input class="input" id="knowledgeFileInput" type="file" />
+                  <div class="muted">支持 txt、pdf、excel、sch、pro、brd、kicad 等设计文件；如果系统文件选择器过滤扩展名，已可直接选择任意文件。</div>
                 </div>
                 <button class="button" id="knowledgeFileSubmitBtn">上传并入库</button>
               `
@@ -1426,7 +1517,7 @@ function renderKnowledgeManage() {
               </select>
               <select class="select" id="knowledgeFilterTypeSelect">
                 <option value="">全部类型</option>
-                ${["txt", "excel", "website", "text"].map((item) => `<option value="${item}" ${item === state.knowledgeFilterType ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+                ${["txt", "pdf", "excel", "cad", "website", "text"].map((item) => `<option value="${item}" ${item === state.knowledgeFilterType ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
               </select>
               <select class="select" id="knowledgeFilterStatusSelect">
                 <option value="">全部状态</option>
@@ -1456,7 +1547,7 @@ function renderKnowledgeManage() {
                           <td>${formatTime(item.updated_at)}</td>
                           <td>
                             <div class="inline-actions">
-                              ${["txt", "excel"].includes(item.knowledge_type) ? `<a class="button button-secondary inline-link-button" href="/api/admin/knowledge/documents/${item.id}/download">下载源文件</a>` : ""}
+                              ${["txt", "pdf", "excel", "cad"].includes(item.knowledge_type) ? `<a class="button button-secondary inline-link-button" href="/api/admin/knowledge/documents/${item.id}/download">下载源文件</a>` : ""}
                               <button class="button button-secondary" data-knowledge-detail="${item.id}">详情</button>
                               <button class="button button-secondary" data-knowledge-delete="${item.id}">删除</button>
                             </div>
@@ -1524,6 +1615,7 @@ function renderKnowledgeDetailModal() {
               `
               : ""
           }
+          ${renderHardwareResources(state.activeKnowledgeDetail.metadata?.hardware_resources)}
           <div class="field">
             <label>元数据</label>
             <pre class="detail-box detail-pre">${escapeHtml(JSON.stringify(state.activeKnowledgeDetail.metadata || {}, null, 2))}</pre>
@@ -1810,7 +1902,7 @@ function renderApp() {
                     : state.view === "board"
                       ? "维护板型主数据、别名和软删除状态。"
                       : state.knowledgeSection === "ingest"
-                        ? "录入 txt、excel、网站正文和手工文本。"
+                        ? "录入 txt、pdf、excel、CAD 设计文件、网站正文和手工文本。"
                         : state.knowledgeSection === "manage"
                           ? "查看并维护各板型下的知识条目。"
                           : "验证板型知识库的 RAG 召回结果。"
@@ -1891,6 +1983,7 @@ function renderApp() {
   document.getElementById("newChatBtn")?.addEventListener("click", async () => {
     state.activeSessionId = null;
     state.messages = [];
+    state.pendingProductModelSwitch = null;
     state.view = "chat";
     render();
   });
@@ -1938,6 +2031,11 @@ function renderApp() {
       event.preventDefault();
       sendMessage().catch((error) => setMessage("error", error.message));
     }
+  });
+  document.querySelectorAll("[data-switch-decision]").forEach((button) => {
+    button.addEventListener("click", () => {
+      confirmProductModelSwitch(button.getAttribute("data-switch-decision")).catch((error) => setMessage("error", error.message));
+    });
   });
   document.getElementById("userTriggerBtn")?.addEventListener("click", () => {
     toggleUserPanel().catch((error) => setMessage("error", error.message));

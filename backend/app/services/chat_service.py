@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from typing import Any, AsyncGenerator
 
@@ -6,7 +7,7 @@ from fastapi import HTTPException
 
 from ...llm_providers import build_system_prompt, call_provider
 from ...langgraph_agent import chat_graph
-from ...product_knowledge import PRODUCT_MODEL_LIST, get_product_hint
+from ...product_knowledge import get_product_hint
 from ...schemas import ChatMessage, ChatState, GraphState
 from ..core.config import settings
 from ..core.database import get_db
@@ -117,6 +118,26 @@ def _build_knowledge_links(rows: list[dict[str, Any]], *, max_items: int = 3) ->
     return "\n".join(items)
 
 
+def _same_product_model(left: str | None, right: str | None) -> bool:
+    return bool(left and right and left.strip().lower() == right.strip().lower())
+
+
+def _should_confirm_product_model_switch(
+    *,
+    current_product_model: str | None,
+    matched_product_model: str | None,
+    intent: str | None,
+    switch_decision: str | None,
+) -> bool:
+    return bool(
+        not switch_decision
+        and current_product_model
+        and matched_product_model
+        and intent == "set_product_model"
+        and not _same_product_model(current_product_model, matched_product_model)
+    )
+
+
 def _assert_chat_rate_limit(*, user_id: int) -> None:
     with get_db() as conn:
         row = conn.execute(
@@ -174,10 +195,13 @@ async def stream_chat_reply(
     *,
     user_id: int,
     session_id: str,
-    message: str,
+    message: str | None,
     provider: str,
     model: str | None,
     current_product_model: str | None,
+    product_model_switch_decision: str | None = None,
+    pending_product_model: str | None = None,
+    pending_original_message: str | None = None,
 ) -> AsyncGenerator[str, None]:
     # 聊天主流程：
     # 1. 写入用户消息
@@ -187,7 +211,9 @@ async def stream_chat_reply(
     # 5. 否则进入大模型流式生成
     # 6. 把 assistant 回复和 usage 落库
     session = get_session(user_id=user_id, session_id=session_id)
-    text = (message or "").strip()
+    incoming_message = pending_original_message if product_model_switch_decision else message
+    text = (incoming_message or "").strip()
+    answer_prefix = ""
     if not text:
         yield sse_event("error", "消息不能为空。")
         yield sse_event("end", "[DONE]")
@@ -200,43 +226,117 @@ async def stream_chat_reply(
         yield sse_event("end", "[DONE]")
         return
 
-    with get_db() as conn:
-        # 先落用户消息，确保刷新页面后历史能立即看到。
-        conn.execute(
-            """
-            INSERT INTO chat_message (session_id, role, content, prompt_tokens, total_tokens)
-            VALUES (%s::uuid, 'user', %s, %s, %s)
-            """,
-            (session_id, text, _estimate_tokens(text), _estimate_tokens(text)),
-        )
-        conn.execute(
-            """
-            UPDATE chat_session
-            SET provider = %s,
-                model = %s,
-                current_product_model = COALESCE(%s, current_product_model),
-                last_message_at = NOW(),
-                title = CASE WHEN title = 'New chat' THEN %s ELSE title END
-            WHERE id = %s::uuid
-            """,
-            (provider, model, current_product_model, _truncate_title(text), session_id),
-        )
+    if not product_model_switch_decision:
+        with get_db() as conn:
+            # 先落用户消息，确保刷新页面后历史能立即看到。
+            conn.execute(
+                """
+                INSERT INTO chat_message (session_id, role, content, prompt_tokens, total_tokens)
+                VALUES (%s::uuid, 'user', %s, %s, %s)
+                """,
+                (session_id, text, _estimate_tokens(text), _estimate_tokens(text)),
+            )
+            conn.execute(
+                """
+                UPDATE chat_session
+                SET provider = %s,
+                    model = %s,
+                    current_product_model = COALESCE(%s, current_product_model),
+                    last_message_at = NOW(),
+                    title = CASE WHEN title = 'New chat' THEN %s ELSE title END
+                WHERE id = %s::uuid
+                """,
+                (provider, model, current_product_model, _truncate_title(text), session_id),
+            )
 
     history_rows = get_session_messages(user_id=user_id, session_id=session_id)
     history = [ChatMessage(role=row["role"], content=row["content"]) for row in history_rows]
+    if product_model_switch_decision and history and history[-1].role == "assistant":
+        history = history[:-1]
+    session_product_model = current_product_model or session.get("current_product_model")
+
+    if product_model_switch_decision == "yes" and pending_product_model:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE chat_session
+                SET current_product_model = %s, provider = %s, model = %s, last_message_at = NOW()
+                WHERE id = %s::uuid
+                """,
+                (pending_product_model, provider, model, session_id),
+            )
+        session_product_model = pending_product_model
+        answer_prefix = f"已切换到{pending_product_model}，下面继续回答你的问题。\n\n"
+
     graph_state = GraphState(
         messages=history,
-        current_product_model=current_product_model or session.get("current_product_model"),
+        current_product_model=session_product_model,
         provider=provider,
         model=model,
     )
     routed = await chat_graph.ainvoke(graph_state)
     state = routed if isinstance(routed, GraphState) else GraphState(**routed)
     resolved_product_model = state.current_product_model
+    persist_product_model = resolved_product_model
 
-    if state.intent == "set_product_model" and state.matched_product_model in PRODUCT_MODEL_LIST:
+    if _should_confirm_product_model_switch(
+        current_product_model=session_product_model,
+        matched_product_model=state.matched_product_model,
+        intent=state.intent,
+        switch_decision=product_model_switch_decision,
+    ):
+        content = (
+            f"当前会话已经是{session_product_model}，检测到你这次提到了{state.matched_product_model}。"
+            "要切换当前会话板型吗？"
+        )
+        payload = json.dumps(
+            {
+                "current_product_model": session_product_model,
+                "pending_product_model": state.matched_product_model,
+                "original_message": text,
+            },
+            ensure_ascii=False,
+        )
+        with get_db() as conn:
+            completion_tokens = _estimate_tokens(content)
+            conn.execute(
+                """
+                INSERT INTO chat_message (session_id, role, content, completion_tokens, total_tokens)
+                VALUES (%s::uuid, 'assistant', %s, %s, %s)
+                """,
+                (session_id, content, completion_tokens, completion_tokens),
+            )
+            conn.execute(
+                """
+                INSERT INTO usage_event (user_id, session_id, provider, model, completion_tokens, total_tokens)
+                VALUES (%s, %s::uuid, %s, %s, %s, %s)
+                """,
+                (user_id, session_id, provider, model, completion_tokens, completion_tokens),
+            )
+        yield sse_event("confirm_product_model_switch", payload)
+        yield sse_event("token", content)
+        yield sse_event("end", "[DONE]")
+        return
+
+    if product_model_switch_decision == "no":
+        state.intent = state.fallback_intent or "general_chat"
+        if pending_product_model:
+            resolved_product_model = pending_product_model
+        persist_product_model = session_product_model
+
+    if (
+        product_model_switch_decision == "yes"
+        and state.intent == "set_product_model"
+        and _same_product_model(state.matched_product_model, session_product_model)
+    ):
+        state.intent = state.fallback_intent or "general_chat"
+        resolved_product_model = session_product_model
+        persist_product_model = session_product_model
+
+    if state.intent == "set_product_model" and state.matched_product_model:
         # 如果本轮是在“设置产品型号”，就不调用大模型，直接写回会话状态并回复确认文案。
         resolved_product_model = state.matched_product_model
+        persist_product_model = resolved_product_model
         with get_db() as conn:
             conn.execute(
                 """
@@ -314,7 +414,11 @@ async def stream_chat_reply(
     buffer = ""
     started_at = time.perf_counter()
     try:
-        yield sse_event("product_model", resolved_product_model)
+        if resolved_product_model and _same_product_model(resolved_product_model, persist_product_model):
+            yield sse_event("product_model", resolved_product_model)
+        if answer_prefix:
+            buffer += answer_prefix
+            yield sse_event("token", answer_prefix)
         # 真正的大模型流式输出在这里发生。
         async for token in call_provider(llm_state):
             buffer += token
@@ -354,7 +458,7 @@ async def stream_chat_reply(
             SET current_product_model = %s, last_message_at = NOW()
             WHERE id = %s::uuid
             """,
-            (resolved_product_model, session_id),
+            (persist_product_model, session_id),
         )
         conn.execute(
             """
